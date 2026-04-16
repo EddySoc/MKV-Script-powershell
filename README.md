@@ -81,6 +81,12 @@ This repository intentionally does not include:
 
 Those files are excluded through the Git ignore rules.
 
+## License
+
+This project is released under the GNU GPL v3 license.
+
+That means people may use, study, modify, and redistribute it, but redistributed versions must keep the same license terms.
+
 ## Status
 
 This is a real-world utility project that is being refined step by step through testing on actual video files.
