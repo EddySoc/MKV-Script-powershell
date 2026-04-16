@@ -1,0 +1,51 @@
+# Local secrets and machine-specific config
+config.ini
+config.ini.backup
+OpenSubtitles.auth
+*.auth
+
+# Local working/output folders
+backup/
+FrostWire/
+MegaSync/
+QBTemp/
+Rejected/
+Temp/
+Media/
+Logs/
+Done/
+Metadata/
+
+# Third-party packages / caches
+argos-packages/
+_cleanup_test/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.env
+
+# Local binary tools
+*.exe
+*.dll
+
+# Generated media and subtitle files
+*.mkv
+*.mp4
+*.avi
+*.mov
+*.wmv
+*.webm
+*.srt
+*.ass
+*.sub
+*.idx
+*.zip
+*.7z
+*.rar
+
+# OS / editor noise
+Thumbs.db
+Desktop.ini
+.vscode/
