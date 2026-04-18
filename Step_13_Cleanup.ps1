@@ -217,6 +217,7 @@ function Cleanup-WorkingDirectories {
 function Start-Finalize {
     Start-StepLog -StepNumber "13" -StepName "Cleanup"
     Cleanup-WorkingDirectories
+    Set-StepRunResult -Step "13" -Success 1 -Failed 0 -FailedItems @() -Note "cleanup complete"
     Stop-StepLog
 }
 

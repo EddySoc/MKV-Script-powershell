@@ -262,50 +262,269 @@ function Test-SubtitleTitleMatch {
     return ($overlap -ge $required)
 }
 
+function Get-OpenSubtitlesAuthSettings {
+    param([string]$AuthPath)
+
+    $settings = [ordered]@{
+        OsdbUser    = ''
+        OsdbPwd     = ''
+        OsComUser   = ''
+        OsComPwd    = ''
+        OsComApiKey = ''
+    }
+
+    if (-not (Test-Path -LiteralPath $AuthPath)) {
+        return $settings
+    }
+
+    foreach ($line in (Get-Content -LiteralPath $AuthPath -ErrorAction SilentlyContinue)) {
+        if ($line -match '^\s*([^=]+?)\s*=\s*(.*)\s*$') {
+            $key = $matches[1].Trim().ToLower()
+            $value = $matches[2].Trim()
+
+            switch -Regex ($key) {
+                '^(osdb\.?user|username|user)$' {
+                    if (-not $settings.OsdbUser) { $settings.OsdbUser = $value }
+                    if (-not $settings.OsComUser) { $settings.OsComUser = $value }
+                    break
+                }
+                '^(osdb\.?pwd|osdb\.?pass|password|pass)$' {
+                    if (-not $settings.OsdbPwd) { $settings.OsdbPwd = $value }
+                    if (-not $settings.OsComPwd) { $settings.OsComPwd = $value }
+                    break
+                }
+                '^(oscom\.?user|opensubtitles\.com\.?user)$' {
+                    $settings.OsComUser = $value
+                    break
+                }
+                '^(oscom\.?pwd|oscom\.?pass|opensubtitles\.com\.?pwd|opensubtitles\.com\.?pass)$' {
+                    $settings.OsComPwd = $value
+                    break
+                }
+                '^(oscom\.?api_?key|opensubtitles\.com\.?api_?key|api_?key)$' {
+                    $settings.OsComApiKey = $value
+                    break
+                }
+            }
+        }
+    }
+
+    if (-not $settings.OsComUser) { $settings.OsComUser = $settings.OsdbUser }
+    if (-not $settings.OsComPwd) { $settings.OsComPwd = $settings.OsdbPwd }
+
+    return $settings
+}
+
+function Get-OpenSubtitlesComLanguageCode {
+    param([string]$Language)
+
+    switch ("$Language".Trim().ToLower()) {
+        'dut' { return 'nl' }
+        'nld' { return 'nl' }
+        'nl'  { return 'nl' }
+        'eng' { return 'en' }
+        default {
+            $value = "$Language".Trim().ToLower()
+            if ($value.Length -gt 2) { return $value.Substring(0, 2) }
+            return $value
+        }
+    }
+}
+
+function Download-SubtitleViaOpenSubtitlesCom {
+    param(
+        [string]$VideoPath,
+        [hashtable]$AuthSettings
+    )
+
+    $username = "$($AuthSettings.OsComUser)".Trim()
+    $password = "$($AuthSettings.OsComPwd)".Trim()
+
+    if (-not $username -or -not $password) {
+        return $false
+    }
+
+    $videoDir = Split-Path $VideoPath -Parent
+    $videoName = [System.IO.Path]::GetFileName($VideoPath)
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($VideoPath)
+    $primaryLang = (@($Global:LangKeep -split ',')[0]).Trim()
+    $apiLang = Get-OpenSubtitlesComLanguageCode -Language $primaryLang
+    $query = Get-SearchQueryFromVideoName -VideoName $videoName
+    if (-not $query) { $query = $baseName }
+
+    $headers = @{
+        'Content-Type' = 'application/json'
+        'Accept'       = 'application/json'
+        'User-Agent'   = 'QBtor/1.0'
+    }
+
+    try {
+        $basicAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(("{0}:{1}" -f $username, $password)))
+        $loginHeaders = @{}
+        foreach ($key in $headers.Keys) { $loginHeaders[$key] = $headers[$key] }
+        $loginHeaders['Authorization'] = "Basic $basicAuth"
+
+        $loginResponse = Invoke-RestMethod -Uri 'https://api.opensubtitles.com/api/v1/login' -Method Post -Headers $loginHeaders -TimeoutSec 30
+        $token = @($loginResponse.token, $loginResponse.data.token) | Where-Object { $_ } | Select-Object -First 1
+
+        if (-not $token) {
+            $loginBody = @{ username = $username; password = $password } | ConvertTo-Json
+            $loginResponse = Invoke-RestMethod -Uri 'https://api.opensubtitles.com/api/v1/login' -Method Post -Headers $headers -Body $loginBody -TimeoutSec 30
+            $token = @($loginResponse.token, $loginResponse.data.token) | Where-Object { $_ } | Select-Object -First 1
+        }
+
+        if (-not $token) { return $false }
+        $headers['Authorization'] = "Bearer $token"
+    } catch {
+        $message = $_.Exception.Message
+        if ($message -match '429|Too Many Requests') {
+            Show-Format 'WARNING' 'OpenSubtitles.com tijdelijk gelimiteerd' '429 Too Many Requests - probeer later opnieuw' -NameColor 'Yellow'
+        } else {
+            Show-Format 'WARNING' 'OpenSubtitles.com login failed' $message -NameColor 'Yellow'
+        }
+        return $false
+    }
+
+    try {
+        $searchUrl = "https://api.opensubtitles.com/api/v1/subtitles?languages=$apiLang&query=$([uri]::EscapeDataString($query))&order_by=download_count&order_direction=desc"
+        $searchResponse = Invoke-RestMethod -Uri $searchUrl -Method Get -Headers $headers -TimeoutSec 30
+        $candidates = @($searchResponse.data)
+    } catch {
+        $message = $_.Exception.Message
+        if ($message -match '429|Too Many Requests') {
+            Show-Format 'WARNING' 'OpenSubtitles.com zoeklimiet bereikt' '429 Too Many Requests - wacht even en retry later' -NameColor 'Yellow'
+        } else {
+            Show-Format 'WARNING' 'OpenSubtitles.com search failed' $message -NameColor 'Yellow'
+        }
+        return $false
+    }
+
+    foreach ($candidate in $candidates) {
+        $attributes = $candidate.attributes
+        if (-not $attributes) { continue }
+
+        $releaseName = @(
+            $attributes.release,
+            $attributes.feature_details.movie_name,
+            $attributes.feature_details.title
+        ) | Where-Object { $_ } | Select-Object -First 1
+
+        if ($releaseName -and -not (Test-SubtitleTitleMatch -VideoName $videoName -FetchedRelease $releaseName)) {
+            continue
+        }
+
+        $fileEntries = @($attributes.files)
+        $fileId = $null
+        foreach ($fileEntry in $fileEntries) {
+            if ($fileEntry.file_id) {
+                $fileId = $fileEntry.file_id
+                break
+            }
+            if ($fileEntry.id) {
+                $fileId = $fileEntry.id
+                break
+            }
+        }
+
+        if (-not $fileId) { continue }
+
+        try {
+            $downloadBody = @{ file_id = [int]$fileId; sub_format = 'srt' } | ConvertTo-Json
+            $downloadResponse = Invoke-RestMethod -Uri 'https://api.opensubtitles.com/api/v1/download' -Method Post -Headers $headers -Body $downloadBody -TimeoutSec 60
+            $downloadLink = "$($downloadResponse.link)".Trim()
+            if (-not $downloadLink) { continue }
+
+            $targetPath = Join-Path $videoDir "$baseName.$primaryLang.srt"
+            $tempBase = Join-Path $env:TEMP ("oscom_" + [guid]::NewGuid().ToString())
+            $tempFile = "$tempBase.tmp"
+            Invoke-WebRequest -Uri $downloadLink -Headers @{ 'User-Agent' = 'QBtor/1.0' } -OutFile $tempFile -TimeoutSec 60 | Out-Null
+
+            if (-not (Test-Path -LiteralPath $tempFile) -or (Get-Item -LiteralPath $tempFile).Length -le 0) {
+                Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+                continue
+            }
+
+            $signature = [System.BitConverter]::ToString((Get-Content -LiteralPath $tempFile -AsByteStream -ReadCount 2 -TotalCount 2))
+            if ($signature -eq '50-4B') {
+                $zipPath = "$tempBase.zip"
+                Move-Item -LiteralPath $tempFile -Destination $zipPath -Force
+                $extractDir = "$tempBase.extracted"
+                Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
+                $srtFile = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter '*.srt' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($srtFile) {
+                    Copy-Item -LiteralPath $srtFile.FullName -Destination $targetPath -Force
+                }
+                Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+                Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+            } else {
+                Move-Item -LiteralPath $tempFile -Destination $targetPath -Force
+            }
+
+            if (Test-Path -LiteralPath $targetPath -and (Get-Item -LiteralPath $targetPath).Length -gt 0) {
+                Show-Format 'SUCCESS' 'OpenSubtitles.com fallback used' $videoName -NameColor 'Green'
+                return $true
+            }
+        } catch {
+            Show-Format 'WARNING' 'OpenSubtitles.com download failed' $_.Exception.Message -NameColor 'Yellow'
+        }
+    }
+
+    return $false
+}
+
 # --- FUNCTIE: Subs downloaden via FileBot
 function Download-Subtitles {
     DrawBanner -Text "STEP 05 DOWNLOADING SUBS"
     
-    # Get OpenSubtitles credentials
+    # Get OpenSubtitles credentials (.org for FileBot, .com for API fallback)
     $authPath = Join-Path $Global:ScriptDir $AuthFile
-    $osdbUser = ""
-    $osdbPwd = ""
-    
-    if (Test-Path $authPath) {
-        Get-Content $authPath | ForEach-Object {
-            # Support both formats: osdbuser= and osdb.user=
-            if ($_ -match '^\s*osdb\.?user\s*=\s*(.+)$') {
-                $osdbUser = $matches[1].Trim()
-            }
-            if ($_ -match '^\s*osdb\.?[pP]wd\s*=\s*(.+)$') {
-                $osdbPwd = $matches[1].Trim()
-            }
-        }
-    }
-    
+    $authSettings = Get-OpenSubtitlesAuthSettings -AuthPath $authPath
+    $osdbUser = "$($authSettings.OsdbUser)".Trim()
+    $osdbPwd = "$($authSettings.OsdbPwd)".Trim()
+
     if (-not $osdbUser -or -not $osdbPwd) {
         Show-Format "ERROR" "OpenSubtitles credentials not found in $authPath" "" -NameColor "Red"
-        Show-Format "INFO" "Please configure osdb.user and osdb.pwd in $AuthFile" "" -NameColor "Yellow"
+        Show-Format "INFO" "Please configure username/password or osdb.user/osdb.pwd in $AuthFile" "" -NameColor "Yellow"
         Set-StepRunResult -Step "05" -Success 0 -Failed 1 -FailedItems @("OpenSubtitles credentials missing") -Note "configuration error"
         return
     }
-    
+
     Show-Format "INFO" "Using OpenSubtitles credentials: $osdbUser" "" -NameColor "Cyan"
+    Show-Format "INFO" "OpenSubtitles.com fallback active" "Using the same username/password as backup route" -NameColor "DarkGray"
 
     # Sync credentials from auth file into FileBot settings.properties so FileBot uses the latest values
     $fbSettingsPath = Join-Path $Global:ToolsDir $SettingsFile
     if (Test-Path $fbSettingsPath) {
-        $credLine = "net/filebot/login/OpenSubtitles=$osdbUser`t$osdbPwd"
-        $settingsContent = @(Get-Content $fbSettingsPath)
-        $hasEntry = $settingsContent | Where-Object { $_ -match '^net/filebot/login/OpenSubtitles=' }
-        if ($hasEntry) {
-            $newContent = $settingsContent | ForEach-Object {
-                if ($_ -match '^net/filebot/login/OpenSubtitles=') { $credLine } else { $_ }
-            }
-        } else {
-            $newContent = $settingsContent + $credLine
+        $settingMap = [ordered]@{
+            'net/filebot/login/OpenSubtitles' = "$osdbUser`t$osdbPwd"
+            'osdbUser' = $osdbUser
+            'osdbPwd' = $osdbPwd
         }
-        Set-Content -Path $fbSettingsPath -Value $newContent -Encoding UTF8 -NoNewline:$false
+
+        $settingsContent = @(Get-Content $fbSettingsPath -ErrorAction SilentlyContinue)
+        foreach ($entry in $settingMap.GetEnumerator()) {
+            $pattern = '^' + [regex]::Escape($entry.Key) + '='
+            if ($settingsContent | Where-Object { $_ -match $pattern }) {
+                $settingsContent = $settingsContent | ForEach-Object {
+                    if ($_ -match $pattern) { "$($entry.Key)=$($entry.Value)" } else { $_ }
+                }
+            } else {
+                $settingsContent += "$($entry.Key)=$($entry.Value)"
+            }
+        }
+
+        Set-Content -Path $fbSettingsPath -Value $settingsContent -Encoding UTF8 -NoNewline:$false
+
+        try {
+            & filebot -script fn:configure --def "osdbUser=$osdbUser" "osdbPwd=$osdbPwd" 2>&1 | Out-Null
+        } catch {
+        }
+
+        try {
+            & filebot -clear-cache 2>&1 | Out-Null
+        } catch {
+        }
+
         Show-Format "INFO" "Credentials synced to FileBot settings" "" -NameColor "DarkGray"
     } else {
         Show-Format "WARNING" "FileBot settings.properties not found: $fbSettingsPath" "Credentials not synced" -NameColor "Yellow"
@@ -443,7 +662,7 @@ function Download-Subtitles {
         # Download subtitle for this specific video
         # Note: credentials are supplied via FileBot settings.properties (synced above)
         # --def is only valid for -script calls and is ignored here
-        # Try databases in order: OpenSubtitles first, then Subdl as fallback (free, no auth)
+        # Try FileBot providers first, then direct OpenSubtitles.com API fallback.
         $databases = @('OpenSubtitles', 'Subdl')
         $subDownloaded = $false
 
@@ -560,6 +779,13 @@ function Download-Subtitles {
                     Show-Format "DEBUG" "OpenSubtitles auth issue for:" "$videoName (invalid token after retry)" -NameColor "Yellow"
                 }
                 Show-Format "DEBUG" "$db found nothing for:" "$videoName" -NameColor "DarkGray"
+            }
+        }
+
+        if (-not $subDownloaded) {
+            $subDownloaded = Download-SubtitleViaOpenSubtitlesCom -VideoPath $videoPath -AuthSettings $authSettings
+            if ($subDownloaded) {
+                $acceptedCount++
             }
         }
 

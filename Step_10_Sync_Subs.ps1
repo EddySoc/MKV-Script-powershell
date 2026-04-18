@@ -120,14 +120,18 @@ function Sync-AndScore {
                     Language = "unknown"
                 } -VideoDir $videoDir
                 
-                if ($syncResult) {
+                if ($syncResult -and (Test-SyncedSubtitleLooksSafe -OriginalPath $subPath -CandidatePath $syncResult.Path)) {
                     Show-Format "SYNC" "$subName" "$($syncResult.Chain) sync successful" -NameColor "Green"
                     $syncSuccess++
                     
                     # Update metadata to use the synced subtitle
                     Update-SubtitleMetadata -VideoBaseName $videoName -SyncedSubtitlePath $syncResult.Path -OriginalSubtitleName $subName -SyncChain $syncResult.Chain
                 } else {
-                    Show-Format "SYNC" "$subName" "Sync failed — using original" -NameColor "Yellow"
+                    if ($syncResult) {
+                        Show-Format "WARNING" "$subName" "Sync result rejected: subtitle starts too late or looks incomplete" -NameColor "Yellow"
+                    } else {
+                        Show-Format "SYNC" "$subName" "Sync failed — using original" -NameColor "Yellow"
+                    }
                     $syncFailed++
                     $syncFailedItems += "$videoName :: $subName"
                     # Fall back to original subtitle so Step 09 can still embed it
@@ -174,6 +178,65 @@ function Test-TrueValue {
 
     if ($null -eq $Value) { return $false }
     return @('1', 'true', 'yes', 'on') -contains "$Value".Trim().ToLower()
+}
+
+function Convert-SrtTimeToMs {
+    param([string]$Timecode)
+
+    if (-not $Timecode -or $Timecode -notmatch '^(\d{2}):(\d{2}):(\d{2}),(\d{3})$') {
+        return $null
+    }
+
+    return (([int]$matches[1] * 3600 + [int]$matches[2] * 60 + [int]$matches[3]) * 1000 + [int]$matches[4])
+}
+
+function Get-SubtitleTimingInfo {
+    param([string]$SubtitlePath)
+
+    if (-not (Test-Path -LiteralPath $SubtitlePath)) {
+        return $null
+    }
+
+    $pattern = '(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})'
+    $matchesFound = [regex]::Matches((Get-Content -LiteralPath $SubtitlePath -Raw -ErrorAction SilentlyContinue), $pattern)
+    if (-not $matchesFound -or $matchesFound.Count -eq 0) {
+        return $null
+    }
+
+    $firstStart = Convert-SrtTimeToMs -Timecode $matchesFound[0].Groups[1].Value
+    $lastEnd = Convert-SrtTimeToMs -Timecode $matchesFound[$matchesFound.Count - 1].Groups[2].Value
+
+    return @{
+        CueCount = $matchesFound.Count
+        FirstStartMs = $firstStart
+        LastEndMs = $lastEnd
+    }
+}
+
+function Test-SyncedSubtitleLooksSafe {
+    param(
+        [string]$OriginalPath,
+        [string]$CandidatePath
+    )
+
+    $original = Get-SubtitleTimingInfo -SubtitlePath $OriginalPath
+    $candidate = Get-SubtitleTimingInfo -SubtitlePath $CandidatePath
+
+    if (-not $original -or -not $candidate) {
+        return $true
+    }
+
+    $minimumCueCount = [Math]::Max(10, [int][Math]::Floor($original.CueCount * 0.6))
+    if ($candidate.CueCount -lt $minimumCueCount) {
+        return $false
+    }
+
+    $shiftMs = $candidate.FirstStartMs - $original.FirstStartMs
+    if ($original.FirstStartMs -lt 300000 -and $candidate.FirstStartMs -gt 900000 -and $shiftMs -gt 600000) {
+        return $false
+    }
+
+    return $true
 }
 
 function Invoke-SyncChain {

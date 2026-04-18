@@ -20,9 +20,18 @@ function Remove-EmptyParentDirs {
 function Copy-And-Transform {
     DrawBanner -Text "STEP 02 COPY VIDEOS & SUBTITLES"
 
+    $stats = @{
+        Processed = 0
+        Success   = 0
+        Failed    = 0
+        Skipped   = 0
+        SubsCopied = 0
+    }
+
     if (-not $SourceDir -or -not $TempDir) {
         Show-Format "ERROR" "SourceDir or TempDir not set in environment" "" -NameColor "Red"
-        exit 1
+        $stats.Failed = 1
+        return $stats
     }
 
     $videoExts = @(".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm")
@@ -41,7 +50,8 @@ function Copy-And-Transform {
     
     if ($allVideos.Count -eq 0) {
         Show-Format "WARNING" "No videos found in $sourceRoot" "" -NameColor "Yellow"
-        return
+        $stats.Skipped = 1
+        return $stats
     }
 
     # Use global metadata directory
@@ -52,6 +62,7 @@ function Copy-And-Transform {
     
     # Process each video
     foreach ($vidFile in $allVideos) {
+        $stats.Processed++
         $src = $vidFile.FullName
         $baseName = Sanitize-PathName $vidFile.BaseName  # Remove brackets from filename
         $ext = $vidFile.Extension.ToLower()
@@ -109,12 +120,14 @@ function Copy-And-Transform {
                 $verbosity = if ($DebugLevel -eq 0) { "quiet" } else { "error" }
                 & ffmpeg -y -v $verbosity -i $src -map 0 -c copy $targetFile 2>&1 | Out-Null
                 if (Test-Path -LiteralPath $targetFile) {
-                    # Show-Format "OK" "MKV copied successfully" "" -NameColor "Green"                    
+                    $stats.Success++
                 } else {
                     Show-Format "ERROR" "MKV copy failed: file not found after copy - $baseName" "" -NameColor "Red"
+                    $stats.Failed++
                 }
             } catch {
                 Show-Format "ERROR" "Failed to copy MKV: $_ - $baseName" "" -NameColor "Red"
+                $stats.Failed++
             }
         } else {
             Show-Format "CONVERT" "$baseName$ext → .mkv" "" -NameColor "Green"
@@ -130,6 +143,11 @@ function Copy-And-Transform {
                 if ($proc.ExitCode -eq 0 -and (Test-Path $tempFile)) {
                     Move-Item -Path $tempFile -Destination $targetFile -Force -ErrorAction SilentlyContinue
                     Remove-Item $errorLog -ErrorAction SilentlyContinue
+                    if (Test-Path -LiteralPath $targetFile) {
+                        $stats.Success++
+                    } else {
+                        $stats.Failed++
+                    }
                 } elseif ($proc.ExitCode -ne 0) {
                     # Read error details
                     $errorDetails = ""
@@ -143,11 +161,13 @@ function Copy-And-Transform {
                     Show-Format "ERROR" "Conversion failed: $baseName$ext (exit code: $($proc.ExitCode))$errorDetails" "" -NameColor "Red"
                     if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
                     Remove-Item $errorLog -ErrorAction SilentlyContinue
+                    $stats.Failed++
                 }
             } catch {
                 Show-Format "ERROR" "FFmpeg error: $_" "" -NameColor "Red"
                 if (Test-Path $tempFile) { Remove-Item $tempFile -Force -ErrorAction SilentlyContinue }
                 Remove-Item $errorLog -ErrorAction SilentlyContinue
+                $stats.Failed++
             }
         }
     }
@@ -201,6 +221,7 @@ function Copy-And-Transform {
             Show-Format "ERROR" "Failed to copy sub $subName - $_" "" -NameColor "Red"
         }
     }
+    $stats.SubsCopied = $subCount
     Show-Format "INFO" "Total subs copied: $subCount" "" -NameColor "Yellow"
 
     Write-Host ""
@@ -251,15 +272,17 @@ function Copy-And-Transform {
     }
 
     Show-Format "COMPLETE" "Videos and subtitles prepared in TempDir" "" -NameColor "Yellow"
+    return $stats
 }
 
 # ___ Wrapper ____________________________________________________________
 function Rename-VideosWithFileBot {
     DrawBanner -Text "STEP 02b FILEBOT RENAME"
+    $renameCount = 0
 
     if (-not (Get-Command filebot -ErrorAction SilentlyContinue)) {
         Show-Format "SKIP" "FileBot niet gevonden in PATH" "Rename stap overgeslagen" -NameColor "Yellow"
-        return
+        return $renameCount
     }
 
     $tempDir = $Global:TempDir
@@ -292,7 +315,7 @@ function Rename-VideosWithFileBot {
 
         if ($renameMap.Count -eq 0) {
             Show-Format "INFO" "FileBot: geen hernoemingen voorgesteld" "Bestanden behouden originele naam" -NameColor "DarkGray"
-            return
+            return $renameCount
         }
 
         Show-Format "INFO" "FileBot stelt $($renameMap.Count) hernoeming(en) voor" "" -NameColor "Yellow"
@@ -305,6 +328,7 @@ function Rename-VideosWithFileBot {
             if ($oldBase -eq $newBase) { continue }
 
             Show-Format "RENAME" $oldBase "→ $newBase" -NameColor "Green"
+            $renameCount++
 
             # Hernoem video-bestand
             if (Test-Path -LiteralPath $oldPath) {
@@ -333,12 +357,20 @@ function Rename-VideosWithFileBot {
     } catch {
         Show-Format "WARNING" "FileBot rename mislukt: $_" "Verdergaan met originele namen" -NameColor "Yellow"
     }
+
+    return $renameCount
 }
 
 function Start-Prep {
     Start-StepLog -StepNumber "02" -StepName "Copy_And_Rename"
-    Copy-And-Transform
-    Rename-VideosWithFileBot
+    $prepStats = Copy-And-Transform
+    $renameCount = Rename-VideosWithFileBot
+
+    if (-not $prepStats) {
+        $prepStats = @{ Success = 0; Failed = 0; Skipped = 1; SubsCopied = 0 }
+    }
+
+    Set-StepRunResult -Step "02" -Success ([int]$prepStats.Success) -Failed ([int]$prepStats.Failed) -FailedItems @() -Note "skipped=$([int]$prepStats.Skipped), renamed=$renameCount, subs=$([int]$prepStats.SubsCopied)"
     Stop-StepLog
 }
 

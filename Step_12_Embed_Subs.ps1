@@ -155,13 +155,35 @@ function Sync-PostEmbed {
     }
 }
 
+function Save-SelectedSubtitleForVerification {
+    param (
+        [string]$SubtitlePath,
+        [string]$DestinationDir,
+        [string]$VideoBaseName,
+        [string]$Language
+    )
+
+    if (-not (Test-Path -LiteralPath $SubtitlePath) -or -not $DestinationDir) {
+        return $null
+    }
+
+    if (-not (Test-Path -LiteralPath $DestinationDir)) {
+        New-Item -ItemType Directory -Path $DestinationDir -Force | Out-Null
+    }
+
+    $safeLanguage = if ([string]::IsNullOrWhiteSpace($Language) -or $Language -eq 'unknown') { 'sub' } else { $Language.ToLower() }
+    $targetPath = Join-Path $DestinationDir "$VideoBaseName.$safeLanguage.srt"
+    Copy-Item -LiteralPath $SubtitlePath -Destination $targetPath -Force
+    return $targetPath
+}
+
 function Embed-All {
     DrawBanner "STEP 12 EMBED SUBTITLES"
 
     $metaDir = $Global:MetaDir
     $logPath = Join-Path $LogDir "embed_all.log"
     
-    Set-Content -Path $logPath -Value "VideoName`tSubtitle`tEmbedStatus`tMoveStatus"
+    Set-Content -Path $logPath -Value "VideoName`tSubtitle`tEmbedStatus`tMoveStatus`tSavedToSource"
     
     $stats = @{
         TOTAL = 0
@@ -234,20 +256,13 @@ function Embed-All {
                 Language = $meta.Language
                 Score = $meta.Score
                 EmbedStatus = "OK"
+                SyncedFrom = $meta.SyncedFrom
+                SyncChain = $meta.SyncChain
+                VerifiedSubtitleCopy = $meta.VerifiedSubtitleCopy
             }
             $updatedMeta | ConvertTo-Json | Set-Content -LiteralPath $metaFile -Force
             
-            # Delete external subtitle file (it's now embedded)
-            if (Test-Path -LiteralPath $subPath) {
-                Remove-Item -LiteralPath $subPath -Force
-            }
-            
-            # Delete all other .srt files for this video
-            Get-ChildItem -LiteralPath $mkvDir -File -Filter "*.srt" | Where-Object {
-                $_.Name -like "$mkvBase*.srt"
-            } | ForEach-Object {
-                Remove-Item -LiteralPath $_.FullName -Force
-            }
+            Show-Format "KEEP" "$($meta.SubtitleFile)" "Subtitle preserved for verification" -NameColor "Cyan"
         } else {
             Show-Format "ERROR" "$mkvName" "Embed failed" -NameColor "Red"
             $stats.FAILED++
@@ -307,6 +322,8 @@ function Embed-All {
         # Kopieer naar de definitieve locatie met schone naam
         $finalPath = Join-Path $destDir $cleanMkvName
         
+        $savedSubtitlePath = ""
+
         try {
             # Voor series, controleer op duplicaat in de root Series map (van eerdere runs met platte structuur)
             if ($videoType -eq "Series" -and $destDir -notmatch '\\Series$' -and -not [string]::IsNullOrWhiteSpace($cleanMkvName)) {
@@ -337,6 +354,15 @@ function Embed-All {
             } else {
                 Show-Format "COPY" "$mkvName" "→ $videoType" -NameColor "Green"
             }
+
+            $sourceSubtitleDir = if ($meta.SourceFolder) { $meta.SourceFolder } else { $null }
+            $savedSubtitlePath = Save-SelectedSubtitleForVerification -SubtitlePath $subPath -DestinationDir $sourceSubtitleDir -VideoBaseName $mkvBase -Language $subLang
+            if ($savedSubtitlePath) {
+                Show-Format "SAVE SUB" "$([System.IO.Path]::GetFileName($savedSubtitlePath))" "Copied to source folder" -NameColor "Cyan"
+                $updatedMeta.VerifiedSubtitleCopy = $savedSubtitlePath
+                $updatedMeta | ConvertTo-Json | Set-Content -LiteralPath $metaFile -Force
+            }
+
             $stats.MOVED++
             $moveStatus = "OK"
         } catch {
@@ -346,7 +372,7 @@ function Embed-All {
             $moveStatus = "FAILED"
         }
         DrawBar "*"
-        Add-Content -Path $logPath -Value "$mkvBase`t$($meta.SubtitleFile)`t$embedStatus`t$moveStatus"
+        Add-Content -Path $logPath -Value "$mkvBase`t$($meta.SubtitleFile)`t$embedStatus`t$moveStatus`t$savedSubtitlePath"
     }
     
     # Process source folders: read all metadata files and handle those with EmbedStatus=OK

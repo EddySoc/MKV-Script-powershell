@@ -303,6 +303,93 @@ function Set-StepRunResult {
     }
 }
 
+function Get-StepSummaryLabel {
+    param(
+        [string]$Step,
+        [string]$Mode = ""
+    )
+
+    switch ($Step) {
+        "02" { return 'Copy Rename Transform' }
+        "03" {
+            if ($Mode) {
+                switch -Regex ($Mode.ToLower()) {
+                    'high_bitdepth_to_h265_8bit' { return 'h265_8bit' }
+                    'h265_to_h264|convert' { return 'h264 conversion' }
+                    'reject' { return 'Reject H265' }
+                    default { return $Mode }
+                }
+            }
+            return 'Get Metadata'
+        }
+        "04" { return 'Extract and Store' }
+        "05" { return 'Download Subs' }
+        "06" { return 'Speech to Text' }
+        "07" { return 'Validate SRT' }
+        "08" { return 'Clean SRT' }
+        "09" { return 'Score Subs' }
+        "10" { return 'Sync Subs' }
+        "11" { return 'Translate Subs' }
+        "12" { return 'Embed and Move' }
+        "13" { return 'Finalize Cleanup' }
+        default { return "Step $Step" }
+    }
+}
+
+function Get-StepNoteData {
+    param([string]$Note)
+
+    $data = @{}
+    if ([string]::IsNullOrWhiteSpace($Note)) {
+        return $data
+    }
+
+    $data['_text'] = $Note.Trim()
+    foreach ($part in ($Note -split '\s*,\s*')) {
+        if ($part -match '^\s*([^=]+?)\s*=\s*(.*)\s*$') {
+            $data[$matches[1].Trim()] = $matches[2].Trim()
+        }
+    }
+
+    return $data
+}
+
+function Get-StepSkippedCount {
+    param(
+        $Entry,
+        [hashtable]$NoteData
+    )
+
+    if ($NoteData.ContainsKey('skipped') -and "$($NoteData['skipped'])" -match '^\d+$') {
+        return [Math]::Max(0, [int]$NoteData['skipped'])
+    }
+
+    if ($NoteData.ContainsKey('total') -and "$($NoteData['total'])" -match '^\d+$') {
+        return [Math]::Max(0, [int]$NoteData['total'] - [int]$Entry.Success - [int]$Entry.Failed)
+    }
+
+    if ($NoteData.ContainsKey('processed') -and "$($NoteData['processed'])" -match '^\d+$') {
+        return [Math]::Max(0, [int]$NoteData['processed'] - [int]$Entry.Success - [int]$Entry.Failed)
+    }
+
+    $text = if ($NoteData.ContainsKey('_text')) { "$($NoteData['_text'])".ToLower() } else { '' }
+    if ($text -match 'step skipped|nothing to download|no subtitles found|no valid videos in list') {
+        return 1
+    }
+
+    return 0
+}
+
+function Get-StepExtraSummaryText {
+    param(
+        [string]$Step,
+        $Entry,
+        [hashtable]$NoteData
+    )
+
+    return ''
+}
+
 function Show-StepRunSummary {
     DrawBanner -Text "PIPELINE RESULT SUMMARY"
 
@@ -311,13 +398,33 @@ function Show-StepRunSummary {
         return
     }
 
-    $order = @("03", "05", "06", "07", "08", "09", "10", "11", "12")
+    $order = @("02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13")
     foreach ($step in $order) {
         if (-not $Global:StepRunResults.Contains($step)) { continue }
 
         $entry = $Global:StepRunResults[$step]
-        $notePart = if ($entry.Note) { " | $($entry.Note)" } else { "" }
-        Show-Format "STEP $step" "Success=$($entry.Success) | Failed=$($entry.Failed)$notePart" "" -NameColor "Cyan"
+        $noteData = Get-StepNoteData -Note $entry.Note
+        $skipped = Get-StepSkippedCount -Entry $entry -NoteData $noteData
+
+        if ($step -eq '03' -and $noteData.ContainsKey('metadataSuccess')) {
+            $metaSuccess = if ("$($noteData['metadataSuccess'])" -match '^\d+$') { [int]$noteData['metadataSuccess'] } else { 0 }
+            $metaFailed = if ("$($noteData['metadataFailed'])" -match '^\d+$') { [int]$noteData['metadataFailed'] } else { 0 }
+            $metaSkipped = if ("$($noteData['metadataSkipped'])" -match '^\d+$') { [int]$noteData['metadataSkipped'] } else { 0 }
+            Show-Format "STEP $step" "[$(Get-StepSummaryLabel -Step $step)]" "Success=$metaSuccess | Failed=$metaFailed | Skipped=$metaSkipped" -NameColor "Cyan"
+
+            if ($noteData.ContainsKey('mode')) {
+                $modeLabel = Get-StepSummaryLabel -Step $step -Mode "$($noteData['mode'])"
+                Show-Format "STEP $step" "[$modeLabel]" "Success=$($entry.Success) | Failed=$($entry.Failed) | Skipped=$skipped" -NameColor "Cyan"
+            }
+        } else {
+            $label = Get-StepSummaryLabel -Step $step
+            $info = "Success=$($entry.Success) | Failed=$($entry.Failed) | Skipped=$skipped"
+            $extraText = Get-StepExtraSummaryText -Step $step -Entry $entry -NoteData $noteData
+            if ($extraText) {
+                $info += " | $extraText"
+            }
+            Show-Format "STEP $step" "[$label]" $info -NameColor "Cyan"
+        }
 
         if ($entry.FailedItems -and $entry.FailedItems.Count -gt 0) {
             foreach ($failedItem in $entry.FailedItems) {

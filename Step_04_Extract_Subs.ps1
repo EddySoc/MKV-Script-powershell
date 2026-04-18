@@ -114,6 +114,12 @@ function Process-Subtitles {
     $SubsExt = ".subs.txt"
     $FFmpeg  = "ffmpeg.exe"
 
+    $stats = @{
+        Success = 0
+        Failed = 0
+        Skipped = 0
+    }
+
     DrawBanner -Text "STEP 04 EXTRACT INTERNAL SUBS"
    
     Get-ChildItem -Path $Global:TempDir -Recurse -Filter *.mkv | ForEach-Object {
@@ -125,6 +131,7 @@ function Process-Subtitles {
         $audioFilterSuccess = Filter-AudioTracks -mkvFile $mkvFile
         if (-not $audioFilterSuccess) {
             Show-Format "SKIP" "$baseName" "Audio filtering failed" -NameColor "Red"
+            $stats.Failed++
             return
         }
 
@@ -157,6 +164,7 @@ function Process-Subtitles {
 
         if ($SubCount -eq 0) {
             Show-Format "SKIP" "$baseName" "No subs" "" -NameColor "DarkGray"
+            $stats.Skipped++
             return
         }
         # Subs alway 2 digits
@@ -198,6 +206,7 @@ function Process-Subtitles {
                     } else {
                         Show-Format "ERROR" "ffmpeg fout bij $baseName (track $track)" "" -NameColor "Red"
                     }
+                    $stats.Failed++
                     continue
                 }
 
@@ -205,8 +214,10 @@ function Process-Subtitles {
                     # File already has correct name, no need to rename
                     # Always Rewrite this line without CRLF
                     Write-ColoredSegments "[EXTRACT   ][  ] " "$baseName." "$lang.$trackPad" ".INT.srt" 
+                    $stats.Success++
                 } else {
                     Show-Format "WARNING" "Subs niet gevonden: $rawSrt" "" -NameColor "Red"
+                    $stats.Failed++
                 }
             }
         }
@@ -215,10 +226,16 @@ function Process-Subtitles {
         # FFSubSync/Alass ze kunnen gebruiken als referentie tijdens sync (Step_09/10).
         # De oude embedded subs worden pas verwijderd in Step_11 tijdens het embedden.
     }
+
+    return $stats
 }
 # ----- Uitvoeren -----
 function Start-Store {
     Start-StepLog -StepNumber "04" -StepName "Extract_Subs"
-    Process-Subtitles
+    $storeStats = Process-Subtitles
+    if (-not $storeStats) {
+        $storeStats = @{ Success = 0; Failed = 0; Skipped = 1 }
+    }
+    Set-StepRunResult -Step "04" -Success ([int]$storeStats.Success) -Failed ([int]$storeStats.Failed) -FailedItems @() -Note "skipped=$([int]$storeStats.Skipped)"
     Stop-StepLog
 }

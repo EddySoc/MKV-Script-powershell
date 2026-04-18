@@ -1,3 +1,4 @@
 # Copy this file to OpenSubtitles.auth and fill in your own account details.
+# The same username/password are used for both the normal FileBot login and the opensubtitles.com fallback.
 username=your_username
 password=your_password

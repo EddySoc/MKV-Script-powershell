@@ -21,6 +21,63 @@ function Start-STT {
     Stop-StepLog
 }
 
+function Stop-ProcessTreeSafe {
+    param([Parameter(Mandatory=$true)][int]$ProcessId)
+
+    try {
+        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ProcessId" -ErrorAction SilentlyContinue)
+        foreach ($child in $children) {
+            Stop-ProcessTreeSafe -ProcessId ([int]$child.ProcessId)
+        }
+
+        $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        if ($proc) {
+            try {
+                if (-not $proc.HasExited) {
+                    $proc.Kill($true)
+                }
+            } catch {
+                Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Stop-LingeringSTTProcesses {
+    param(
+        [string]$WhisperExe,
+        [int[]]$KeepPids = @()
+    )
+
+    if (-not $WhisperExe) { return }
+
+    $processName = [System.IO.Path]::GetFileNameWithoutExtension($WhisperExe)
+    $exeFullPath = try { [System.IO.Path]::GetFullPath($WhisperExe) } catch { $WhisperExe }
+    $running = @(Get-Process -Name $processName -ErrorAction SilentlyContinue)
+
+    foreach ($p in $running) {
+        if ($KeepPids -contains $p.Id) { continue }
+
+        $sameExe = $true
+        try {
+            $sameExe = ([System.IO.Path]::GetFullPath($p.MainModule.FileName) -eq $exeFullPath)
+        } catch {
+            $sameExe = ($p.ProcessName -ieq $processName)
+        }
+
+        if (-not $sameExe) { continue }
+
+        try {
+            Stop-ProcessTreeSafe -ProcessId $p.Id
+            Show-Format "CLEANUP" "$($p.ProcessName) PID=$($p.Id)" "Achterblijvend Whisper-proces afgesloten" -NameColor "Yellow"
+        } catch {
+            Show-Format "WARNING" "Kon STT-proces niet afsluiten" "$($p.ProcessName) PID=$($p.Id)" -NameColor "Yellow"
+        }
+    }
+}
+
 function Invoke-STTLanguageDetect {
     # Detecteert de primaire audiotaal door een 60s clip uit het MIDDEN van de video
     # te transcriberen. Zo beïnvloedt een cold open in een andere taal (bv. Russisch)
@@ -91,6 +148,12 @@ function Invoke-STT {
         Set-StepRunResult -Step "06" -Success 0 -Failed 1 -FailedItems @("STTExe missing") -Note "configuration error"
         return
     }
+
+    $whisperProcessName = [System.IO.Path]::GetFileNameWithoutExtension($whisperExe)
+    if (-not $Global:InitialSTTPids) {
+        $Global:InitialSTTPids = @(Get-Process -Name $whisperProcessName -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    }
+    $baselineWhisperPids = @($Global:InitialSTTPids)
 
     $model       = if ($Global:STTModel)      { $Global:STTModel }      else { "medium" }
     $audioLang   = if ($Global:STTLanguage)   { $Global:STTLanguage }   else { "auto" }
@@ -262,83 +325,97 @@ public class WhisperOutputReader {
         $psi.RedirectStandardError  = $true
         $psi.CreateNoWindow         = $true
 
-        $proc           = New-Object System.Diagnostics.Process
-        $proc.StartInfo = $psi
-        $null           = $proc.Start()
+        $proc = $null
+        try {
+            $proc           = New-Object System.Diagnostics.Process
+            $proc.StartInfo = $psi
+            $null           = $proc.Start()
 
-        # Lees stdout EN stderr in aparte achtergrondthreads
-        $stdoutReader = New-Object WhisperOutputReader($proc.StandardOutput)
-        $stderrReader = New-Object WhisperOutputReader($proc.StandardError)
-        $stdoutReader.StartReading()
-        $stderrReader.StartReading()
+            if (-not $Global:TrackedSTTPids) { $Global:TrackedSTTPids = @() }
+            $Global:TrackedSTTPids = @($Global:TrackedSTTPids + $proc.Id | Select-Object -Unique)
 
-        # Polling loop op de hoofd-thread — Write-Progress mag hier wel
-        $allLines = [System.Collections.Generic.List[string]]::new()
-        $lastPct  = -1
+            # Lees stdout EN stderr in aparte achtergrondthreads
+            $stdoutReader = New-Object WhisperOutputReader($proc.StandardOutput)
+            $stderrReader = New-Object WhisperOutputReader($proc.StandardError)
+            $stdoutReader.StartReading()
+            $stderrReader.StartReading()
 
-        while (-not $proc.HasExited) {
-            foreach ($readerObj in @($stdoutReader, $stderrReader)) {
-                $line = $null
-                while ($readerObj.Lines.TryDequeue([ref]$line)) {
-                    $allLines.Add($line)
+            # Polling loop op de hoofd-thread — Write-Progress mag hier wel
+            $allLines = [System.Collections.Generic.List[string]]::new()
+            $lastPct  = -1
 
-                    # Faster-Whisper-XXL / Whisper progress: "Transcribing: 42%|..."
-                    $pct = -1
-                    if ($line -match '(\d{1,3})%') { $pct = [int]$Matches[1] }
+            while (-not $proc.HasExited) {
+                foreach ($readerObj in @($stdoutReader, $stderrReader)) {
+                    $line = $null
+                    while ($readerObj.Lines.TryDequeue([ref]$line)) {
+                        $allLines.Add($line)
 
-                    if ($pct -ge 0 -and $pct -ne $lastPct) {
-                        $lastPct = $pct
-                        $bar     = '#' * [int]($pct / 5)
-                        $empty   = '-' * (20 - [int]($pct / 5))
-                        Write-Progress -Activity "Whisper STT" `
-                                       -Status "$videoName  ($pct%)" `
-                                       -PercentComplete $pct
-                        Write-Host "`r  [STT] [$bar$empty] $pct%  " -NoNewline -ForegroundColor Cyan
-                    } elseif ($line.Trim() -ne '') {
-                        # Toon alle andere niet-lege regels (model laden, taaldetectie, etc.)
-                        Write-Host "  [STT] $($line.Trim())" -ForegroundColor DarkCyan
+                        # Faster-Whisper-XXL / Whisper progress: "Transcribing: 42%|..."
+                        $pct = -1
+                        if ($line -match '(\d{1,3})%') { $pct = [int]$Matches[1] }
+
+                        if ($pct -ge 0 -and $pct -ne $lastPct) {
+                            $lastPct = $pct
+                            $bar     = '#' * [int]($pct / 5)
+                            $empty   = '-' * (20 - [int]($pct / 5))
+                            Write-Progress -Activity "Whisper STT" `
+                                           -Status "$videoName  ($pct%)" `
+                                           -PercentComplete $pct
+                            Write-Host "`r  [STT] [$bar$empty] $pct%  " -NoNewline -ForegroundColor Cyan
+                        } elseif ($line.Trim() -ne '') {
+                            # Toon alle andere niet-lege regels (model laden, taaldetectie, etc.)
+                            Write-Host "  [STT] $($line.Trim())" -ForegroundColor DarkCyan
+                        }
                     }
                 }
+                Start-Sleep -Milliseconds 150
             }
-            Start-Sleep -Milliseconds 150
-        }
 
-        $proc.WaitForExit()
+            $proc.WaitForExit()
 
-        # Drain resterende regels na exit
-        foreach ($readerObj in @($stdoutReader, $stderrReader)) {
-            $line = $null
-            while ($readerObj.Lines.TryDequeue([ref]$line)) { $allLines.Add($line) }
-        }
+            # Drain resterende regels na exit
+            foreach ($readerObj in @($stdoutReader, $stderrReader)) {
+                $line = $null
+                while ($readerObj.Lines.TryDequeue([ref]$line)) { $allLines.Add($line) }
+            }
 
-        # Sluit voortgangsindicator af
-        Write-Progress -Activity "Whisper STT" -Completed
-        Write-Host ""  # newline na inline voortgangsregel
-        $stderr = $allLines -join "`n"
+            # Sluit voortgangsindicator af
+            Write-Progress -Activity "Whisper STT" -Completed
+            Write-Host ""  # newline na inline voortgangsregel
+            $stderr = $allLines -join "`n"
 
-        # Whisper genereert: <videobasename>.srt (zonder taaltag)
-        $whisperOut = Join-Path $videoDir "$videoName.srt"
-        $taggedName = "$videoName.$subLangTag.srt"
-        $taggedPath = Join-Path $videoDir $taggedName
+            # Whisper genereert: <videobasename>.srt (zonder taaltag)
+            $whisperOut = Join-Path $videoDir "$videoName.srt"
+            $taggedName = "$videoName.$subLangTag.srt"
+            $taggedPath = Join-Path $videoDir $taggedName
 
-        if (Test-Path -LiteralPath $whisperOut) {
-            # Hernoem naar videoname.{lang}.srt zodat de taaldetectie werkt
-            # Controleer exitcode NIET: Faster-Whisper-XXL geeft soms non-zero terug ondanks succes
-            Rename-Item -LiteralPath $whisperOut -NewName $taggedName -Force -ErrorAction SilentlyContinue
-            if ($proc.ExitCode -ne 0) {
-                Show-Format "STT" "$taggedName" "Geslaagd (exitcode $($proc.ExitCode), bestand aanwezig)" -NameColor "Yellow"
+            if (Test-Path -LiteralPath $whisperOut) {
+                # Hernoem naar videoname.{lang}.srt zodat de taaldetectie werkt
+                # Controleer exitcode NIET: Faster-Whisper-XXL geeft soms non-zero terug ondanks succes
+                Rename-Item -LiteralPath $whisperOut -NewName $taggedName -Force -ErrorAction SilentlyContinue
+                if ($proc.ExitCode -ne 0) {
+                    Show-Format "STT" "$taggedName" "Geslaagd (exitcode $($proc.ExitCode), bestand aanwezig)" -NameColor "Yellow"
+                } else {
+                    Show-Format "STT" "$taggedName" "Geslaagd" -NameColor "Green"
+                }
+                $generatedCount++
+            } elseif (Test-Path -LiteralPath $taggedPath) {
+                # Whisper heeft soms al een taalextensie toegevoegd
+                Show-Format "STT" "$taggedName" "Geslaagd (reeds hernoemd)" -NameColor "Green"
+                $generatedCount++
             } else {
-                Show-Format "STT" "$taggedName" "Geslaagd" -NameColor "Green"
+                Show-Format "STT" "$videoName" "Mislukt (exitcode $($proc.ExitCode)): $stderr" -NameColor "Red"
+                $failedCount++
+                $failedItems += $videoName
             }
-            $generatedCount++
-        } elseif (Test-Path -LiteralPath $taggedPath) {
-            # Whisper heeft soms al een taalextensie toegevoegd
-            Show-Format "STT" "$taggedName" "Geslaagd (reeds hernoemd)" -NameColor "Green"
-            $generatedCount++
-        } else {
-            Show-Format "STT" "$videoName" "Mislukt (exitcode $($proc.ExitCode)): $stderr" -NameColor "Red"
-            $failedCount++
-            $failedItems += $videoName
+        } finally {
+            Write-Progress -Activity "Whisper STT" -Completed
+            if ($proc) {
+                try { $proc.StandardOutput.Dispose() } catch {}
+                try { $proc.StandardError.Dispose() } catch {}
+                try { $proc.Dispose() } catch {}
+            }
+            Stop-LingeringSTTProcesses -WhisperExe $whisperExe -KeepPids $baselineWhisperPids
         }
     }
 

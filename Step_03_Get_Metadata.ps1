@@ -296,13 +296,13 @@ function Start-GenMeta {
             -Success ([int]$Global:LastConversionStats.Converted) `
             -Failed ([int]$Global:LastConversionStats.Failed) `
             -FailedItems @($Global:LastConversionStats.FailedItems) `
-            -Note "mode=$($Global:LastConversionStats.Mode), skipped=$($Global:LastConversionStats.Skipped)"
+            -Note "metadataSuccess=$($metaStats.Success), metadataFailed=$($metaStats.Failed), metadataSkipped=0, mode=$($Global:LastConversionStats.Mode), skipped=$($Global:LastConversionStats.Skipped)"
     } else {
         Set-StepRunResult -Step "03" `
             -Success ([int]$metaStats.Success) `
             -Failed ([int]$metaStats.Failed) `
             -FailedItems @($metaStats.FailedItems) `
-            -Note "metadata collection"
+            -Note "metadataSuccess=$($metaStats.Success), metadataFailed=$($metaStats.Failed), metadataSkipped=0"
     }
     
     Stop-StepLog
