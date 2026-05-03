@@ -6,9 +6,15 @@ function Sync-AndScore {
 
     DrawBanner "STEP 10 SYNC AND SELECT BEST SUBTITLES"
 
-    $syncModeName = if ($Global:SyncMode) { $Global:SyncMode.ToUpper() } else { "ALWAYS" }
-    $forceSyncText = if ($syncModeName -eq "ALWAYS") { " (Force sync)" } else { "" }
-    Show-Format "CONFIG" "SyncMode=$syncModeName$forceSyncText" "" -NameColor "Cyan"
+    $syncEnabled = $false
+    if ($Global:SyncEnabled -ne $null) {
+        $syncEnabled = Test-TrueValue $Global:SyncEnabled
+    } elseif ($Global:SyncMode) {
+        $syncEnabled = ($Global:SyncMode.ToLower() -eq 'always')
+    } else {
+        $syncEnabled = $true
+    }
+    Show-Format "CONFIG" "SyncEnabled=$syncEnabled" "" -NameColor "Cyan"
 
     # Get all videos
     $tempDir = $Global:TempDir
@@ -161,15 +167,14 @@ function Test-SubtitleNeedsSync {
         [string]$VideoName
     )
 
-    # Volg alleen SyncMode dropdown: 'always' = altijd syncen, 'none' = nooit syncen
+    # Volg SyncEnabled checkbox: true = syncen, false = niet syncen
+    if ($Global:SyncEnabled -ne $null) {
+        return (Test-TrueValue $Global:SyncEnabled)
+    }
+    # Fallback op oude SyncMode voor compatibiliteit
     $syncMode = if ($Global:SyncMode) { $Global:SyncMode.ToLower() } else { "always" }
-    if ($syncMode -eq "always") {
-        return $true
-    }
-    if ($syncMode -eq "none") {
-        return $false
-    }
-    # Als het niet always of none is, sync dan toch (voor compatibiliteit)
+    if ($syncMode -eq "always") { return $true }
+    if ($syncMode -eq "none") { return $false }
     return $true
 }
 
@@ -246,28 +251,43 @@ function Invoke-SyncChain {
         [string]$VideoDir
     )
 
+    $useAlass = $true
+    $useFFSubSync = $true
+    if ($Global:UseAlass -ne $null) { $useAlass = Test-TrueValue $Global:UseAlass }
+    if ($Global:UseFFSubSync -ne $null) { $useFFSubSync = Test-TrueValue $Global:UseFFSubSync }
+
+    if (-not $useAlass -and -not $useFFSubSync) {
+        Show-Format "ERROR" "Synchronisatie" "Geen sync tool geselecteerd! Vink ALASS en/of FFSubSync aan in de config." -NameColor "Red"
+        return $null
+    }
+
     $syncSteps = @()
     $workingPath = $SubtitleInfo.Path
     $workingName = $SubtitleInfo.Name
+    $alassResult = $null
+    $ffsubsyncResult = $null
 
-    $alassResult = Sync-WithAlass -VideoPath $VideoPath -SubtitleInfo $SubtitleInfo -VideoDir $VideoDir
-    if ($alassResult) {
-        $workingPath = $alassResult
-        $workingName = [System.IO.Path]::GetFileName($alassResult)
-        $syncSteps += 'ALASS'
+    if ($useAlass) {
+        $alassResult = Sync-WithAlass -VideoPath $VideoPath -SubtitleInfo $SubtitleInfo -VideoDir $VideoDir
+        if ($alassResult) {
+            $workingPath = $alassResult
+            $workingName = [System.IO.Path]::GetFileName($alassResult)
+            $syncSteps += 'ALASS'
+        }
     }
 
-    $ffsubsyncResult = Sync-WithFFSubSync -VideoPath $VideoPath -SubtitleInfo @{
-        Name = $workingName
-        Path = $workingPath
-        Language = $SubtitleInfo.Language
-    } -VideoDir $VideoDir
-
-    if ($ffsubsyncResult) {
-        $syncSteps += 'FFSubSync'
-        return @{
-            Path = $ffsubsyncResult
-            Chain = ($syncSteps -join ' + ')
+    if ($useFFSubSync) {
+        $ffsubsyncResult = Sync-WithFFSubSync -VideoPath $VideoPath -SubtitleInfo @{
+            Name = $workingName
+            Path = $workingPath
+            Language = $SubtitleInfo.Language
+        } -VideoDir $VideoDir
+        if ($ffsubsyncResult) {
+            $syncSteps += 'FFSubSync'
+            return @{
+                Path = $ffsubsyncResult
+                Chain = ($syncSteps -join ' + ')
+            }
         }
     }
 

@@ -253,31 +253,7 @@ function Invoke-STT {
         $effectiveAudioLang = $whisperAudioLang
 
         if ($whisperAudioLang -eq 'auto' -or -not $whisperAudioLang) {
-            if ($multilingualSetting -ne 'false') {
-                Show-Format "STT" "$videoName" "Taal detecteren via middentest (1/3 van video)..." -NameColor "DarkCyan"
-                $detectedName = Invoke-STTLanguageDetect -VideoPath $video.FullName `
-                                                         -WhisperExe $whisperExe `
-                                                         -Model $model `
-                                                         -ModelDir $modelDir
-                if ($detectedName) {
-                    $nameToCode = @{
-                        'english'='en'; 'dutch'='nl'; 'flemish'='nl'; 'russian'='ru'; 'french'='fr';
-                        'german'='de'; 'spanish'='es'; 'italian'='it'; 'portuguese'='pt'; 'polish'='pl';
-                        'swedish'='sv'; 'norwegian'='no'; 'danish'='da'; 'finnish'='fi'; 'japanese'='ja';
-                        'korean'='ko'; 'chinese'='zh'; 'arabic'='ar'; 'turkish'='tr'; 'ukrainian'='uk';
-                        'czech'='cs'; 'hungarian'='hu'; 'romanian'='ro'; 'greek'='el'
-                    }
-                    $effectiveAudioLang = if ($nameToCode.ContainsKey($detectedName)) { $nameToCode[$detectedName] } else { $detectedName }
-                    Show-Format "STT" "$videoName" "Gedetecteerde taal: $detectedName → --language $effectiveAudioLang" -NameColor "Cyan"
-                    $whisperArgs += @("--language", $effectiveAudioLang)
-                } else {
-                    Show-Format "STT" "$videoName" "Middentest mislukt, fallback: language_detection_segments=$detectionSegs" -NameColor "Yellow"
-                    $whisperArgs += @("--language_detection_segments", $detectionSegs)
-                }
-            } else {
-                # STTMultilingual=false → klassieke detectie aan het begin
-                $whisperArgs += @("--language_detection_segments", $detectionSegs)
-            }
+            $whisperArgs += @("--language_detection_segments", $detectionSegs)
         } else {
             $whisperArgs += @("--language", $whisperAudioLang)
         }

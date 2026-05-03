@@ -414,7 +414,6 @@ $controls['Files_LogHistory'] = Add-ConfigCombo $panelFiles $y "Log History:" $c
 $y += 30
 $controls['Files_TempFolder'] = Add-ConfigCombo $panelFiles $y "Temp Folder:" $config['Files']['TempFolder'] @('keep', 'remove') "keep = behoud Temp folder, remove = wis na voltooiing"
 $y += 30
-$controls['Files_MediaFolder'] = Add-ConfigCombo $panelFiles $y "Media Folder:" $config['Files']['MediaFolder'] @('keep') "keep = bevat afgewerkte videos, wordt nooit verwijderd"
 $y += 30
 $controls['Files_MetadataFolder'] = Add-ConfigCombo $panelFiles $y "Metadata Folder:" $config['Files']['MetadataFolder'] @('keep', 'remove') "keep = behoud Metadata folder, remove = wis na voltooiing"
 
@@ -536,21 +535,26 @@ $runCleanDefault = if ($config['Subtitles']['RunClean']) { $config['Subtitles'][
 $controls['Subtitles_RunClean'] = Add-ConfigCheckbox $panelSyncGeneral $y "Subtitle cleaning uitvoeren" $runCleanDefault "Aanvinken = HTML tags en SDH markers verwijderen | Uitvinken = cleaning overslaan"
 $y += 40
 
-# Sync Tool dropdown verwijderd
-    $controls['Subtitles_SyncMode'] = Add-ConfigCombo $panelSyncGeneral $y "Sync Mode:" $config['Subtitles']['SyncMode'] @('always', 'none') "always = altijd syncen, none = geen sync uitvoeren"
+$controls['Subtitles_SyncEnabled'] = Add-ConfigCheckbox $panelSyncGeneral $y "Synchronisatie uitvoeren" ($config['Subtitles']['SyncEnabled'] -eq 'true' -or $config['Subtitles']['SyncMode'] -eq 'always') "Aanvinken = ondertitels synchroniseren, uitvinken = direct embedden zonder sync"
+$y += 40
+
+# Vinkjes voor ALASS en FFSubSync
+$controls['Subtitles_UseAlass'] = Add-ConfigCheckbox $panelSyncGeneral $y "ALASS gebruiken" ($config['Subtitles']['UseAlass'] -eq 'true' -or $config['Subtitles']['UseAlass'] -eq $null) "Aanvinken = ALASS gebruiken voor synchronisatie"
 $y += 30
+$controls['Subtitles_UseFFSubSync'] = Add-ConfigCheckbox $panelSyncGeneral $y "FFSubSync gebruiken" ($config['Subtitles']['UseFFSubSync'] -eq 'true' -or $config['Subtitles']['UseFFSubSync'] -eq $null) "Aanvinken = FFSubSync gebruiken voor synchronisatie"
+$y += 40
 $controls['Subtitles_SyncDebug'] = Add-ConfigCheckbox $panelSyncGeneral $y "Debug Output" $config['Subtitles']['SyncDebug'] "Toon sync parameters in console (nuttig voor troubleshooting)"
 
 $y += 40
 $labelSyncModeHelp = New-Object System.Windows.Forms.Label
 $labelSyncModeHelp.Location = New-Object System.Drawing.Point(10, $y)
-$labelSyncModeHelp.Size = New-Object System.Drawing.Size(700, 80)
-    $labelSyncModeHelp.Text = "Sync Mode uitleg:`n• always = Sync ALLE ondertitels, ongeacht timing kwaliteit`n• none = Geen synchronisatie uitvoeren (ondertitels direct embedden)"
+$labelSyncModeHelp.Size = New-Object System.Drawing.Size(700, 60)
+$labelSyncModeHelp.Text = "Synchronisatie opties:\n• ALASS gebruiken: alleen ALASS\n• FFSubSync gebruiken: alleen FFSubSync\n• Beide: eerst ALASS, dan FFSubSync (meest robuust)\n• Geen van beide: synchronisatie mislukt, vink minstens één optie aan!"
 $labelSyncModeHelp.ForeColor = [System.Drawing.Color]::DarkGreen
 $labelSyncModeHelp.Font = New-Object System.Drawing.Font("Arial", 9)
 $panelSyncGeneral.Controls.Add($labelSyncModeHelp)
 
-$y += 90
+$y += 70
 $labelSyncNote = New-Object System.Windows.Forms.Label
 $labelSyncNote.Location = New-Object System.Drawing.Point(10, $y)
 $labelSyncNote.Size = New-Object System.Drawing.Size(700, 80)
