@@ -539,9 +539,7 @@ $controls['Subtitles_SyncEnabled'] = Add-ConfigCheckbox $panelSyncGeneral $y "Sy
 $y += 40
 
 # Vinkjes voor ALASS en FFSubSync
-$controls['Subtitles_UseAlass'] = Add-ConfigCheckbox $panelSyncGeneral $y "ALASS gebruiken" ($config['Subtitles']['UseAlass'] -eq 'true' -or $config['Subtitles']['UseAlass'] -eq $null) "Aanvinken = ALASS gebruiken voor synchronisatie"
 $y += 30
-$controls['Subtitles_UseFFSubSync'] = Add-ConfigCheckbox $panelSyncGeneral $y "FFSubSync gebruiken" ($config['Subtitles']['UseFFSubSync'] -eq 'true' -or $config['Subtitles']['UseFFSubSync'] -eq $null) "Aanvinken = FFSubSync gebruiken voor synchronisatie"
 $y += 40
 $controls['Subtitles_SyncDebug'] = Add-ConfigCheckbox $panelSyncGeneral $y "Debug Output" $config['Subtitles']['SyncDebug'] "Toon sync parameters in console (nuttig voor troubleshooting)"
 

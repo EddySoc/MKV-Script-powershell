@@ -126,22 +126,17 @@ function Sync-AndScore {
                     Language = "unknown"
                 } -VideoDir $videoDir
                 
-                if ($syncResult -and (Test-SyncedSubtitleLooksSafe -OriginalPath $subPath -CandidatePath $syncResult.Path)) {
+                if ($syncResult) {
                     Show-Format "SYNC" "$subName" "$($syncResult.Chain) sync successful" -NameColor "Green"
                     $syncSuccess++
-                    
                     # Update metadata to use the synced subtitle
                     Update-SubtitleMetadata -VideoBaseName $videoName -SyncedSubtitlePath $syncResult.Path -OriginalSubtitleName $subName -SyncChain $syncResult.Chain
                 } else {
-                    if ($syncResult) {
-                        Show-Format "WARNING" "$subName" "Sync result rejected: subtitle starts too late or looks incomplete" -NameColor "Yellow"
-                    } else {
-                        Show-Format "SYNC" "$subName" "Sync failed — using original" -NameColor "Yellow"
-                    }
+                    Show-Format "WARNING" "$subName" "Sync result rejected: geen bruikbare sync met ALASS of FFSubSync" -NameColor "Red"
                     $syncFailed++
                     $syncFailedItems += "$videoName :: $subName"
-                    # Fall back to original subtitle so Step 09 can still embed it
-                    Update-SubtitleMetadata -VideoBaseName $videoName -SyncedSubtitlePath $subPath -OriginalSubtitleName $subName -SyncChain "Original"
+                    # Markeer als rejected: geen sync, geen embed
+                    Update-SubtitleMetadata -VideoBaseName $videoName -SyncedSubtitlePath $null -OriginalSubtitleName $subName -SyncChain "Rejected"
                 }
             } else {
                 Show-Format "SKIP" "$subName" "Sync not needed" -NameColor "Cyan"
@@ -269,35 +264,32 @@ function Invoke-SyncChain {
 
     if ($useAlass) {
         $alassResult = Sync-WithAlass -VideoPath $VideoPath -SubtitleInfo $SubtitleInfo -VideoDir $VideoDir
-        if ($alassResult) {
-            $workingPath = $alassResult
-            $workingName = [System.IO.Path]::GetFileName($alassResult)
-            $syncSteps += 'ALASS'
-        }
-    }
-
-    if ($useFFSubSync) {
-        $ffsubsyncResult = Sync-WithFFSubSync -VideoPath $VideoPath -SubtitleInfo @{
-            Name = $workingName
-            Path = $workingPath
-            Language = $SubtitleInfo.Language
-        } -VideoDir $VideoDir
-        if ($ffsubsyncResult) {
-            $syncSteps += 'FFSubSync'
+        if ($alassResult -and (Test-SyncedSubtitleLooksSafe -OriginalPath $SubtitleInfo.Path -CandidatePath $alassResult)) {
             return @{
-                Path = $ffsubsyncResult
-                Chain = ($syncSteps -join ' + ')
+                Path = $alassResult
+                Chain = 'ALASS'
             }
         }
     }
 
-    if ($alassResult) {
-        return @{
-            Path = $alassResult
-            Chain = 'ALASS'
+    if ($useFFSubSync) {
+        # Gebruik output van ALASS als input, tenzij die er niet is
+        $ffInputName = $alassResult ? [System.IO.Path]::GetFileName($alassResult) : $SubtitleInfo.Name
+        $ffInputPath = $alassResult ? $alassResult : $SubtitleInfo.Path
+        $ffsubsyncResult = Sync-WithFFSubSync -VideoPath $VideoPath -SubtitleInfo @{
+            Name = $ffInputName
+            Path = $ffInputPath
+            Language = $SubtitleInfo.Language
+        } -VideoDir $VideoDir
+        if ($ffsubsyncResult -and (Test-SyncedSubtitleLooksSafe -OriginalPath $SubtitleInfo.Path -CandidatePath $ffsubsyncResult)) {
+            return @{
+                Path = $ffsubsyncResult
+                Chain = $alassResult ? 'ALASS + FFSubSync' : 'FFSubSync'
+            }
         }
     }
 
+    # Beide pogingen gefaald
     return $null
 }
 
