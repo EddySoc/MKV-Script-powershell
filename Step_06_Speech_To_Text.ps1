@@ -365,6 +365,26 @@ public class WhisperOutputReader {
             $taggedName = "$videoName.$subLangTag.srt"
             $taggedPath = Join-Path $videoDir $taggedName
 
+                function Fix-SrtTimestamps {
+                    param([string]$FilePath)
+                    if (-not (Test-Path $FilePath)) { return }
+                    $content = Get-Content -Raw -LiteralPath $FilePath
+                    # Corrigeer tijdcodes als 00:23:01740 naar 00:23:01,740
+                    $fixed = $content -replace '(\d{2}:\d{2}):(\d{2})(\d{3})(?!,)', '$1:$2,$3'
+                    # Corrigeer ook als er geen komma staat tussen seconden en milliseconden
+                    $fixed = $fixed -replace '(\d{2}:\d{2}):(\d{2})(\d{3})(?=\s*-->)', '$1:$2,$3'
+                    if ($fixed -ne $content) {
+                        Set-Content -LiteralPath $FilePath -Value $fixed -Encoding UTF8
+                    }
+                }
+
+                # Corrigeer tijdcodes in Whisper output vóór hernoemen
+                if (Test-Path -LiteralPath $whisperOut) {
+                    Fix-SrtTimestamps -FilePath $whisperOut
+                } elseif (Test-Path -LiteralPath $taggedPath) {
+                    Fix-SrtTimestamps -FilePath $taggedPath
+                }
+
             if (Test-Path -LiteralPath $whisperOut) {
                 # Hernoem naar videoname.{lang}.srt zodat de taaldetectie werkt
                 # Controleer exitcode NIET: Faster-Whisper-XXL geeft soms non-zero terug ondanks succes
