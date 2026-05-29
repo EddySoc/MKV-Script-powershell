@@ -283,12 +283,12 @@ function Get-OpenSubtitlesAuthSettings {
             $value = $matches[2].Trim()
 
             switch -Regex ($key) {
-                '^(osdb\.?user|username|user)$' {
+                '^(osorg\.?user|osdb\.?user|username|user)$' {
                     if (-not $settings.OsdbUser) { $settings.OsdbUser = $value }
                     if (-not $settings.OsComUser) { $settings.OsComUser = $value }
                     break
                 }
-                '^(osdb\.?pwd|osdb\.?pass|password|pass)$' {
+                '^(osorg\.?pwd|osorg\.?pass|osdb\.?pwd|osdb\.?pass|password|pass)$' {
                     if (-not $settings.OsdbPwd) { $settings.OsdbPwd = $value }
                     if (-not $settings.OsComPwd) { $settings.OsComPwd = $value }
                     break
@@ -339,6 +339,7 @@ function Download-SubtitleViaOpenSubtitlesCom {
 
     $username = "$($AuthSettings.OsComUser)".Trim()
     $password = "$($AuthSettings.OsComPwd)".Trim()
+    $apiKey   = "$($AuthSettings.OsComApiKey)".Trim()
 
     if (-not $username -or -not $password) {
         return $false
@@ -357,21 +358,12 @@ function Download-SubtitleViaOpenSubtitlesCom {
         'Accept'       = 'application/json'
         'User-Agent'   = 'QBtor/1.0'
     }
+    if ($apiKey) { $headers['Api-Key'] = $apiKey }
 
     try {
-        $basicAuth = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(("{0}:{1}" -f $username, $password)))
-        $loginHeaders = @{}
-        foreach ($key in $headers.Keys) { $loginHeaders[$key] = $headers[$key] }
-        $loginHeaders['Authorization'] = "Basic $basicAuth"
-
-        $loginResponse = Invoke-RestMethod -Uri 'https://api.opensubtitles.com/api/v1/login' -Method Post -Headers $loginHeaders -TimeoutSec 30
+        $loginBody = @{ username = $username; password = $password } | ConvertTo-Json
+        $loginResponse = Invoke-RestMethod -Uri 'https://api.opensubtitles.com/api/v1/login' -Method Post -Headers $headers -Body $loginBody -TimeoutSec 30
         $token = @($loginResponse.token, $loginResponse.data.token) | Where-Object { $_ } | Select-Object -First 1
-
-        if (-not $token) {
-            $loginBody = @{ username = $username; password = $password } | ConvertTo-Json
-            $loginResponse = Invoke-RestMethod -Uri 'https://api.opensubtitles.com/api/v1/login' -Method Post -Headers $headers -Body $loginBody -TimeoutSec 30
-            $token = @($loginResponse.token, $loginResponse.data.token) | Where-Object { $_ } | Select-Object -First 1
-        }
 
         if (-not $token) { return $false }
         $headers['Authorization'] = "Bearer $token"
@@ -666,6 +658,8 @@ function Download-Subtitles {
         $databases = @('OpenSubtitles', 'Subdl')
         $subDownloaded = $false
 
+
+        $filebotFailReason = $null
         foreach ($db in $databases) {
             if ($subDownloaded) { break }
 
@@ -734,7 +728,7 @@ function Download-Subtitles {
 
                 Show-Format "WARNING" "Subtitle mismatch rejected" "$videoName <= $fetchedRelease" -NameColor "Yellow"
 
-                # Retry OpenSubtitles once with forced title query.
+                # Retry OpenSubtitles once met geforceerde titelquery.
                 $forcedQuery = if ($queryHint) { $queryHint } else { Get-SearchQueryFromVideoName -VideoName $videoName }
                 if ($forcedQuery) {
                     $retryParams = @('-get-subtitles', $videoPath, '--q', $forcedQuery) + $filebotParams[2..($filebotParams.Length-1)]
@@ -780,12 +774,30 @@ function Download-Subtitles {
                 }
                 Show-Format "DEBUG" "$db found nothing for:" "$videoName" -NameColor "DarkGray"
             }
+
+            # Onthoud reden van mislukken voor fallback-melding
+            if (-not $subDownloaded) {
+                if (($fbOutput | Out-String) -match '(?i)error|fail|mislukt|forbidden|unauthorized|invalid token') {
+                    $filebotFailReason = "FileBot fout: $($fbOutput | Out-String)"
+                } elseif (($fbOutput | Out-String) -match 'No matching subtitles found|No results') {
+                    $filebotFailReason = "Geen ondertitels gevonden via FileBot (.org)"
+                } else {
+                    $filebotFailReason = "Geen ondertitels gevonden via FileBot (.org)"
+                }
+            }
         }
 
         if (-not $subDownloaded) {
+            if ($filebotFailReason) {
+                Show-Format "INFO" "Overschakelen naar OpenSubtitles.com (API)" $filebotFailReason -NameColor "Yellow"
+            } else {
+                Show-Format "INFO" "Overschakelen naar OpenSubtitles.com (API)" "Geen ondertitels gevonden via FileBot (.org)" -NameColor "Yellow"
+            }
             $subDownloaded = Download-SubtitleViaOpenSubtitlesCom -VideoPath $videoPath -AuthSettings $authSettings
             if ($subDownloaded) {
                 $acceptedCount++
+            } else {
+                Show-Format "INFO" "Geen ondertitel gevonden" $videoName -NameColor "Yellow"
             }
         }
 
@@ -824,8 +836,6 @@ function Download-Subtitles {
         # Replace multiple consecutive dots with single dot
         if ($oldName -match '\.\.+') {
             $newName = $oldName -replace '\.\.+', '.'
-            $newPath = Join-Path $sub.DirectoryName $newName
-            
             try {
                 Rename-Item -LiteralPath $sub.FullName -NewName $newName -Force -ErrorAction Stop
                 Show-Format "NORMALIZE" "$oldName" "→ $newName" -NameColor "Cyan"
@@ -939,7 +949,6 @@ function Start-DownloadSubs {
     }
 # --- Dynamisch afgeleide paden
 $NoSubList    = Join-Path $LogDir "nosub_list.txt"
-$ExcludeList  = Join-Path $LogDir "amc.txt"
 # --- Uitvoering
 Check-FileBotConfig
 Get-MissingSubtitles

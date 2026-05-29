@@ -52,10 +52,10 @@ function Invoke-TranslateSubs {
         return
     }
 
-    $targetLang   = if ($Global:Lang) { $Global:Lang } else { ($Global:LangKeep -split ',')[0].Trim() }
-    $fallbackLang = if ($Global:LangFallback -is [string]) { $Global:LangFallback.ToLower() } else { $Global:LangFallback[0].ToLower() }
+    $targetLang    = if ($Global:Lang) { $Global:Lang } else { ($Global:LangKeep -split ',')[0].Trim() }
+    $fallbackLangs = @(($Global:LangFallback -split ',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
 
-    Show-Format "INFO" "Doeltaal: $targetLang" "Brontaal: $fallbackLang" -NameColor "Cyan"
+    Show-Format "INFO" "Doeltaal: $targetLang" "Brontaal: $($fallbackLangs -join ', ')" -NameColor "Cyan"
 
     # --- Loop over alle video's in TempDir
     $allVideos = @(Get-ChildItem -LiteralPath $Global:TempDir -Recurse -Filter "*.mkv" -File -ErrorAction SilentlyContinue |
@@ -95,16 +95,25 @@ function Invoke-TranslateSubs {
             continue
         }
 
-        # Zoek brontaal subs om van te vertalen
-        $fallbackSubs = @(Get-ChildItem -LiteralPath $videoDir -File -Filter "*.srt" -ErrorAction SilentlyContinue | Where-Object {
-            $_.Name -like "$titlePrefix*.srt" -and
-            $_.Name -notmatch '\.synced\.' -and
-            $_.Name -notmatch '\.translated\.srt$' -and
-            (Get-SubtitleLanguage $_.Name) -eq $fallbackLang
-        })
+        # Zoek brontaal subs om van te vertalen (probeer elke fallbacktaal in volgorde)
+        $fallbackSubs = $null
+        $fallbackLang = $null
+        foreach ($fl in $fallbackLangs) {
+            $candidates = @(Get-ChildItem -LiteralPath $videoDir -File -Filter "*.srt" -ErrorAction SilentlyContinue | Where-Object {
+                $_.Name -like "$titlePrefix*.srt" -and
+                $_.Name -notmatch '\.synced\.' -and
+                $_.Name -notmatch '\.translated\.srt$' -and
+                (Get-SubtitleLanguage $_.Name) -eq $fl
+            })
+            if ($candidates.Count -gt 0) {
+                $fallbackSubs = $candidates
+                $fallbackLang = $fl
+                break
+            }
+        }
 
-        if ($fallbackSubs.Count -eq 0) {
-            Show-Format "SKIP" "$videoName" "Geen $fallbackLang sub gevonden om van te vertalen" -NameColor "Yellow"
+        if (-not $fallbackSubs -or $fallbackSubs.Count -eq 0) {
+            Show-Format "SKIP" "$videoName" "Geen sub gevonden in ($($fallbackLangs -join '/')) om van te vertalen" -NameColor "Yellow"
             $skippedCount++
             continue
         }

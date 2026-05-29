@@ -22,6 +22,12 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore", message="Unable to find acceptable character detection dependency")
 
+# Zorg voor UTF-8 output op Windows consoles (voorkomt crash bij emoji/speciale tekens in bestandsnamen)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 # ── Portable packages dir detection ───────────────────────────────────────────────────
 
 def _find_packages_dir(override=None):
@@ -77,8 +83,8 @@ def _find_package(packages_dir, from_code, to_code):
             continue
         if info.get("from_code") == from_code and info.get("to_code") == to_code:
             model_dir = pkg_dir / "model"
-            sp_model  = pkg_dir / "sentencepiece.model"
-            if model_dir.is_dir() and sp_model.exists():
+            sp_model  = next((pkg_dir / n for n in ("sentencepiece.model", "bpe.model") if (pkg_dir / n).exists()), None)
+            if model_dir.is_dir() and sp_model:
                 return model_dir, sp_model
     return None
 

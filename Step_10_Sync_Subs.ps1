@@ -63,13 +63,22 @@ function Sync-AndScore {
             $translateMode = if ($Global:TranslateMode) { $Global:TranslateMode.ToLower() } else { "fallback" }
             $canPreSync = ($translateMode -ne "off") -and $Global:LangFallback -and $Global:TranslatorExe -and (Test-Path $Global:TranslatorExe)
             if ($canPreSync) {
-                $fallbackLang = if ($Global:LangFallback -is [string]) { $Global:LangFallback.ToLower() } else { $Global:LangFallback[0].ToLower() }
-                $fbCandidates = @(Get-ChildItem -LiteralPath $videoDir -File -Filter "*.srt" -ErrorAction SilentlyContinue | Where-Object {
-                    $_.Name -like "$titlePrefix*.srt" -and
-                    $_.Name -notmatch '\.synced\.' -and
-                    $_.Name -notmatch '\.translated\.srt$' -and
-                    (Get-SubtitleLanguage $_.Name) -eq $fallbackLang
-                })
+                $fallbackLangs = @(($Global:LangFallback -split ',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
+                $fallbackLang = $null
+                $fbCandidates = $null
+                foreach ($fl in $fallbackLangs) {
+                    $candidates = @(Get-ChildItem -LiteralPath $videoDir -File -Filter "*.srt" -ErrorAction SilentlyContinue | Where-Object {
+                        $_.Name -like "$titlePrefix*.srt" -and
+                        $_.Name -notmatch '\.synced\.' -and
+                        $_.Name -notmatch '\.translated\.srt$' -and
+                        (Get-SubtitleLanguage $_.Name) -eq $fl
+                    })
+                    if ($candidates.Count -gt 0) {
+                        $fallbackLang = $fl
+                        $fbCandidates = $candidates
+                        break
+                    }
+                }
                 if ($fbCandidates.Count -gt 0) {
                     $fbSub = $fbCandidates[0]
                     Show-Format "PRE-SYNC" "$($fbSub.Name)" "Sync brontaal ($fallbackLang) voor vertaling" -NameColor "DarkCyan"
@@ -87,7 +96,7 @@ function Sync-AndScore {
                         $syncFailedItems += "$videoName :: $($fbSub.Name)"
                     }
                 } else {
-                    Show-Format "SKIP" "$videoName" "Geen sub gevonden (ook geen $fallbackLang voor vertaling)" -NameColor "Yellow"
+                    Show-Format "SKIP" "$videoName" "Geen sub gevonden (ook geen $($fallbackLangs -join '/') voor vertaling)" -NameColor "Yellow"
                 }
             } else {
                 Show-Format "SKIP" "$videoName" "No subtitles found" -NameColor "Yellow"

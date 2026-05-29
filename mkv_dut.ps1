@@ -3,7 +3,7 @@ param(
 )
 
 Clear-Host
-$DebugPreference = "Continue"
+$DebugPreference = "SilentlyContinue"
 
 # __________ Laad config _______________________________________________________________________________________________________________________
 . (Join-Path $PSScriptRoot "Step_0A_Load_Config.ps1")
@@ -15,6 +15,9 @@ while (-not $Global:ConfigLoaded -and $elapsed -lt $maxWait) {
     Start-Sleep -Milliseconds 100
     $elapsed += 0.1
 }
+
+# __________ Pas DebugPreference aan op basis van config _______________________________________________________________________________________
+if ($Global:DEBUGMode) { $DebugPreference = "Continue" }
 
 # __________ Load pipeline scripts _____________________________________________________________________________________________________________________
 if ($Global:ConfigLoaded) {

@@ -259,8 +259,9 @@ function Invoke-STT {
         }
 
         # Optionele vertaling door Whisper zelf (task=translate → output in Engels)
-        # Alleen wanneer de effectieve audiotaal verschilt van de gewenste outputtaal.
-        if ($whisperOutputLang -and $effectiveAudioLang -and $effectiveAudioLang -ne 'auto' -and $whisperOutputLang -ne $effectiveAudioLang) {
+        # Bij auto-detectie: altijd --task translate meegeven als STTOutputLang=eng,
+        # zodat Whisper de gedetecteerde taal naar Engels vertaalt (ook bij Spaans, Frans, etc.).
+        if ($whisperOutputLang -and ($effectiveAudioLang -eq 'auto' -or ($effectiveAudioLang -and $whisperOutputLang -ne $effectiveAudioLang))) {
             $whisperArgs += @("--task", "translate")
         }
 
