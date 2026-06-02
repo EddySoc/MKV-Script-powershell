@@ -57,7 +57,7 @@ function Rename-ForFinal {
     return $cleanName
 }
 
-function Embed-Subtitle {
+function Add-EmbeddedSubtitle {
     param (
         [string]$mkvPath,
         [string]$srtPath,
@@ -73,8 +73,15 @@ function Embed-Subtitle {
     $validLanguages = @('dut', 'nld', 'ned', 'eng', 'en', 'fra', 'fr', 'deu', 'ger', 'spa', 'es', 'por', 'pt', 'ita', 'it', 'pol', 'pl', 'swe', 'sv', 'nor', 'no', 'dan', 'da', 'fin', 'fi', 'est', 'et', 'lav', 'lv', 'lit', 'lt', 'cze', 'cs', 'slv', 'sl', 'slk', 'sk', 'rus', 'ru', 'ukr', 'uk', 'bul', 'bg', 'gre', 'el', 'tur', 'tr', 'ara', 'ar', 'heb', 'he', 'hin', 'hi', 'jpn', 'ja', 'kor', 'ko', 'chi', 'zh', 'vie', 'vi', 'may', 'ms', 'msa', 'ind', 'id', 'tam', 'ta', 'tel', 'te', 'tha', 'th')
     
     if ([string]::IsNullOrWhiteSpace($language) -or $language -eq 'und' -or -not $validLanguages.Contains($language.ToLower())) {
-        # Use primary language from config as fallback
-        $primaryLang = if ($Global:LangKeep -and $Global:LangKeep.Count -gt 0) { $Global:LangKeep[0] } else { 'dut' }
+        # Use primary language from config as fallback (works for both string and array LangKeep values)
+        $langKeepArray = if ($Global:LangKeep -is [array]) {
+            @($Global:LangKeep)
+        } elseif ($Global:LangKeep) {
+            @("$Global:LangKeep" -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        } else {
+            @()
+        }
+        $primaryLang = if ($langKeepArray.Count -gt 0) { $langKeepArray[0] } else { 'dut' }
         Show-Format "WARNING" "$mkvBase" "Invalid language '$language', using '$primaryLang' instead" -NameColor "Yellow"
         $language = $primaryLang
     }
@@ -128,7 +135,7 @@ function Sync-PostEmbed {
     $commandLine = "`"$ffsubsyncExe`" `"$mkvPath`" -i `"$srtPath`" -o `"$postEmbedSrt`" --no-fix-framerate"
     Write-Host "[CMD Test] $commandLine" -ForegroundColor Magenta
     
-    $args = @(
+    $ffSyncParams = @(
         "`"$mkvPath`"",
         "-i", "`"$srtPath`"",
         "-o", "`"$postEmbedSrt`"",
@@ -136,7 +143,7 @@ function Sync-PostEmbed {
     )
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $ffsubsyncExe
-    $psi.Arguments = $args -join ' '
+    $psi.Arguments = $ffSyncParams -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $false  # Toon venster zodat progressbar zichtbaar is
     $psi.RedirectStandardOutput = $false
@@ -177,11 +184,24 @@ function Save-SelectedSubtitleForVerification {
     return $targetPath
 }
 
-function Embed-All {
+function Start-SubtitleEmbedding {
     DrawBanner "STEP 12 EMBED SUBTITLES"
 
     $metaDir = $Global:MetaDir
     $logPath = Join-Path $LogDir "embed_all.log"
+
+    $normalizedSubs = 0
+    Get-ChildItem -LiteralPath $TempDir -Recurse -Filter "*.srt" -File -ErrorAction SilentlyContinue | ForEach-Object {
+        if (Repair-SrtTimestamps -FilePath $_.FullName) {
+            $normalizedSubs++
+            if ($Global:DEBUGMode) {
+                Show-Format "DEBUG" "Timing repaired" $_.Name -NameColor "DarkGray"
+            }
+        }
+    }
+    if ($normalizedSubs -gt 0) {
+        Show-Format "INFO" "Subtitle timings repaired" "$normalizedSubs bestand(en) bijgewerkt voor embed" -NameColor "Cyan"
+    }
     
     Set-Content -Path $logPath -Value "VideoName`tSubtitle`tEmbedStatus`tMoveStatus`tSavedToSource"
     
@@ -193,15 +213,12 @@ function Embed-All {
     }
     $failedItems = @()
     
-    $metaFilesToProcess = @()
-    
     # Process each video
     Get-ChildItem -LiteralPath $TempDir -Recurse -Filter *.mkv | ForEach-Object {
         $mkvFile = $_
         $mkvName = $mkvFile.Name
         $mkvBase = $mkvFile.BaseName
         $mkvPath = $mkvFile.FullName
-        $mkvDir = $mkvFile.DirectoryName
         
         $stats.TOTAL++
         
@@ -240,7 +257,7 @@ function Embed-All {
         Show-Format "EMBED" "$mkvName" "with $($meta.SubtitleFile)"
         
         # Embed subtitle
-        $embedOK = Embed-Subtitle -mkvPath $mkvPath -srtPath $subPath -language $subLang
+        $embedOK = Add-EmbeddedSubtitle -mkvPath $mkvPath -srtPath $subPath -language $subLang
         
         if ($embedOK) {
             Show-Format "EMBED OK" "$mkvName" "Subtitle embedded" -NameColor "Green"
@@ -525,6 +542,6 @@ function Embed-All {
 # ─── Begin taakcode ────────────────────────────────────────────────────
 function Start-Embed {
     Start-StepLog -StepNumber "12" -StepName "Embed_Subs"
-    Embed-All
+    Start-SubtitleEmbedding
     Stop-StepLog
 }

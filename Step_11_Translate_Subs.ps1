@@ -227,6 +227,7 @@ public class WhisperOutputReader {
         $stderr = $allLines -join "`n"
 
         if ($proc.ExitCode -eq 0 -and (Test-Path -LiteralPath $translatedPath)) {
+            Repair-SrtTimestamps -FilePath $translatedPath | Out-Null
             Show-Format "TRANSLATE" "$translatedName" "Geslaagd (geen extra sync nodig)" -NameColor "Green"
             # Schrijf metadata zodat Step_09 deze sub embedt
             Update-SubtitleMetadata -VideoBaseName $videoName -SyncedSubtitlePath $translatedPath -OriginalSubtitleName $translatedName

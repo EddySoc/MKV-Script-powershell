@@ -52,28 +52,6 @@ $Global:LangMap = @{
     tha = @("th", "tha")
 }
 
-$Ansi = @{
-    Black          = "`e[30m"
-    Red            = "`e[31m"
-    Green          = "`e[32m"
-    Yellow         = "`e[33m"
-    Blue           = "`e[34m"
-    Magenta        = "`e[35m"
-    Cyan           = "`e[36m"
-    White          = "`e[37m"
-
-    BrightBlack    = "`e[90m"
-    BrightRed      = "`e[91m"
-    BrightGreen    = "`e[92m"
-    BrightYellow   = "`e[93m"
-    BrightBlue     = "`e[94m"
-    BrightMagenta  = "`e[95m"
-    BrightCyan     = "`e[96m"
-    BrightWhite    = "`e[97m"
-
-    Reset          = "`e[0m"
-}
-
 #*********************************************************************************************
 #      Text Formatting Utils
 #*********************************************************************************************
@@ -661,7 +639,7 @@ function Remove-NonAlphaNumeric {
 # $cleaned = Remove-NonAlphaNumeric $text
 # Write-Host $cleaned  # Output: Cafe42test
 
-function Sanitize-PathName {
+function ConvertTo-SafePathName {
     param ([string]$text)
     # Remove only truly problematic characters for Windows paths: < > : " | ? *
     # For brackets: if there's a character before [, replace [ with .
@@ -702,7 +680,7 @@ function Get-GCD {
 
 # Voorbeeld
 # $text = "The.Mandalorian.S03[TGx]"
-# $cleaned = Sanitize-PathName $text
+# $cleaned = ConvertTo-SafePathName $text
 # Write-Host $cleaned  # Output: The.Mandalorian.S03TGx
 
 
@@ -829,7 +807,7 @@ function Expand-LangKeep {
     return $LangList  # ← GEEN join
 }
 
-function Clean-Dirs {
+function Clear-Dirs {
     $
     Show-Format "INIT" "Cleaning Folders..." -NameColor "Yellow"
     
@@ -847,7 +825,7 @@ function Clean-Dirs {
     }
 }
 
-function Check-Vars {
+function Test-Vars {
     param (
         [string[]]$RequiredVars
     )
@@ -873,7 +851,7 @@ function Check-Vars {
     return $true
 }
 
-function Check-Tools {
+function Test-Tools {
     param (
         [hashtable]$ToolMap        
     )
@@ -1000,11 +978,22 @@ function Show-ProgressBar {
 # ___ Extract and normalize language from subtitle filename ___________________________
 function Get-SubtitleLanguage {
     param ([string]$fileName)
+
+    if ([string]::IsNullOrWhiteSpace($fileName)) {
+        return "unknown"
+    }
+
+    # Normaliseer bekende suffixen zodat de taalcode herkenbaar blijft.
+    # Voorbeeld: video.eng.translated.srt -> video.eng.srt
+    $normalizedName = $fileName
+    if ($normalizedName -match '\.translated\.srt$') {
+        $normalizedName = $normalizedName -replace '\.translated\.srt$', '.srt'
+    }
     
     # Extract language code from filename (before .EXT/.INT/.SYN markers and any sync suffixes)
     # Pattern: .lang.EXT.srt or .lang.##.EXT.srt or just .lang.srt
     # Also handles .ffsubsync.synced, .alass.synced, etc.
-    if ($fileName -match '\.([a-z]{2,3})(\.\d{2})?(\.?(EXT|INT|SYN))?(?:\.[a-z]+\.synced)?\.srt$') {
+    if ($normalizedName -match '\.([a-z]{2,3})(\.\d{2})?(\.?(EXT|INT|SYN))?(?:\.[a-z]+\.synced)?\.srt$') {
         $extractedLang = $matches[1]
         
         # Check against all languages in LangMap to find canonical form
@@ -1018,6 +1007,35 @@ function Get-SubtitleLanguage {
         return $extractedLang
     }
     return "unknown"
+}
+
+function Repair-SrtTimestamps {
+    param([string]$FilePath)
+
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath)) {
+        return $false
+    }
+
+    $content = Get-Content -Raw -LiteralPath $FilePath -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        return $false
+    }
+
+    $fixed = $content
+
+    # Fix timestamps where the comma between seconds and milliseconds is missing.
+    # Examples:
+    #   00:00:21710 --> 00:00:24,130  => 00:00:21,710 --> 00:00:24,130
+    #   00:00:20,910 --> 00:00:21710  => 00:00:20,910 --> 00:00:21,710
+    $fixed = [regex]::Replace($fixed, '(?m)(\d{2}:\d{2}:)(\d{2})(\d{3})(?=\s*-->)', '$1$2,$3')
+    $fixed = [regex]::Replace($fixed, '(?m)(-->\s*)(\d{2}:\d{2}:)(\d{2})(\d{3})(?=\s*$)', '$1$2$3,$4')
+
+    if ($fixed -ne $content) {
+        Set-Content -LiteralPath $FilePath -Value $fixed -Encoding UTF8
+        return $true
+    }
+
+    return $false
 }
 
 #*********************************************************************************************
@@ -1057,7 +1075,6 @@ function Convert-H265ToH264WithAAC {
     }
 
     $InputFileDisplay = Split-Path $InputFile -Leaf
-    $OutputFileDisplay = Split-Path $OutputFile -Leaf
 
     # Use a temporary file in the temp directory to avoid path issues
     $tempOutput = [System.IO.Path]::Combine($env:TEMP, [System.IO.Path]::GetRandomFileName() + ".mkv")
@@ -1518,7 +1535,6 @@ function Convert-HighBitDepthToH265 {
     }
 
     $InputFileDisplay = Split-Path $InputFile -Leaf
-    $OutputFileDisplay = Split-Path $OutputFile -Leaf
 
     # Detect pixel format, bit depth, current resolution, and aspect ratio
     $pixFmt = ""
@@ -1640,15 +1656,6 @@ function Convert-HighBitDepthToH265 {
             $videoFilter = "setdar=${AspectRatio}"
         }
         
-        # Get duration for progress calculation
-        $duration = 0
-        try {
-            $durationStr = (& $Global:FFprobeExe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 $InputFile 2>$null).Trim()
-            $duration = [double]$durationStr
-        } catch {
-            $duration = 0
-        }
-
         # Build FFmpeg arguments
         $ffmpegArgs = @(
             "-hide_banner",

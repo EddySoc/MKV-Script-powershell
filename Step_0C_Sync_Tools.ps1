@@ -11,14 +11,14 @@ function Sync-WithFFSubSync {
         return $false
     }
     $syncOutput = Join-Path $VideoDir "$([System.IO.Path]::GetFileNameWithoutExtension($SubtitleInfo.Name)).ffsubsync.synced.srt"
-    $args = @(
+    $ffSyncParams = @(
         $VideoPath,
         "-i", $SubtitleInfo.Path,
         "-o", $syncOutput
     )
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $ffsubsyncExe
-    $psi.Arguments = $args -join ' '
+    $psi.Arguments = $ffSyncParams -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
@@ -101,14 +101,14 @@ function Sync-WithAlass {
         return $false
     }
     $syncOutput = Join-Path $VideoDir "$([System.IO.Path]::GetFileNameWithoutExtension($SubtitleInfo.Name)).alass.synced.srt"
-    $args = @(
+    $alassParams = @(
         $VideoPath,
         $SubtitleInfo.Path,
         $syncOutput
     )
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $alassExe
-    $psi.Arguments = $args -join ' '
+    $psi.Arguments = $alassParams -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
@@ -116,8 +116,8 @@ function Sync-WithAlass {
     $proc = New-Object System.Diagnostics.Process
     $proc.StartInfo = $psi
     $null = $proc.Start()
-    $stdOut = $proc.StandardOutput.ReadToEnd()
-    $stdErr = $proc.StandardError.ReadToEnd()
+    $null = $proc.StandardOutput.ReadToEnd()
+    $null = $proc.StandardError.ReadToEnd()
     $proc.WaitForExit()
     if ($proc.ExitCode -eq 0 -and (Test-Path -LiteralPath $syncOutput)) {
         return $syncOutput

@@ -64,7 +64,7 @@ function Copy-And-Transform {
     foreach ($vidFile in $allVideos) {
         $stats.Processed++
         $src = $vidFile.FullName
-        $baseName = Sanitize-PathName $vidFile.BaseName  # Remove brackets from filename
+        $baseName = ConvertTo-SafePathName $vidFile.BaseName  # Remove brackets from filename
         $ext = $vidFile.Extension.ToLower()
         
         # Get original source folder (direct parent of video file)
@@ -80,7 +80,7 @@ function Copy-And-Transform {
         if ($relDir) {
             $pathParts = $relDir -split '\\'
             # Show-Format "DEBUG" "Path parts" "Count: $($pathParts.Count) | Parts: $($pathParts -join ' | ')" -NameColor "Yellow"
-            $sanitizedParts = @($pathParts | ForEach-Object { Sanitize-PathName $_ })
+            $sanitizedParts = @($pathParts | ForEach-Object { ConvertTo-SafePathName $_ })
             # Show-Format "DEBUG" "Sanitized parts" "Count: $($sanitizedParts.Count) | Parts: $($sanitizedParts -join ' | ')" -NameColor "Yellow"
             $sanitizedRelDir = $sanitizedParts -join '\'
             # Show-Format "DEBUG" "Sanitized relDir" "'$sanitizedRelDir' | Length: $($sanitizedRelDir.Length)" -NameColor "Yellow"
@@ -176,7 +176,7 @@ function Copy-And-Transform {
     $subCount = 0
     Get-ChildItem -Path $sourceRoot -Recurse -Filter "*.srt" -File | ForEach-Object {
         $subPath = $_.FullName
-        $subBaseName = Sanitize-PathName $_.BaseName  # Sanitize filename (remove brackets)
+        $subBaseName = ConvertTo-SafePathName $_.BaseName  # Sanitize filename (remove brackets)
         $subName = "$subBaseName$($_.Extension)"
 
         # Remove existing language tags from filename to avoid double tagging
@@ -189,7 +189,7 @@ function Copy-And-Transform {
         # Sanitize folder names in path but keep directory structure
         if ($relDir) {
             $pathParts = $relDir -split '\\'
-            $sanitizedParts = @($pathParts | ForEach-Object { Sanitize-PathName $_ })
+            $sanitizedParts = @($pathParts | ForEach-Object { ConvertTo-SafePathName $_ })
             $sanitizedRelDir = $sanitizedParts -join '\'
         } else {
             $sanitizedRelDir = ""

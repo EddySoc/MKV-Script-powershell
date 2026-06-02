@@ -7,7 +7,7 @@ function Sync-AndScore {
     DrawBanner "STEP 10 SYNC AND SELECT BEST SUBTITLES"
 
     $syncEnabled = $false
-    if ($Global:SyncEnabled -ne $null) {
+    if ($null -ne $Global:SyncEnabled) {
         $syncEnabled = Test-TrueValue $Global:SyncEnabled
     } elseif ($Global:SyncMode) {
         $syncEnabled = ($Global:SyncMode.ToLower() -eq 'always')
@@ -58,46 +58,11 @@ function Sync-AndScore {
         }
 
         if ($videoSubs.Count -eq 0) {
-            # Geen doeltaal-sub: pre-sync fallback-taal sub als vertaling actief is,
-            # zodat Step_08b de gesyncde versie kan vertalen (timestamps al correct).
+            # Geen doeltaal-sub gevonden. In de STT/vertaal-flow wordt GEEN pre-sync gedaan:
+            # STT levert al bruikbare timing en vertaling volgt daarop rechtstreeks.
             $translateMode = if ($Global:TranslateMode) { $Global:TranslateMode.ToLower() } else { "fallback" }
-            $canPreSync = ($translateMode -ne "off") -and $Global:LangFallback -and $Global:TranslatorExe -and (Test-Path $Global:TranslatorExe)
-            if ($canPreSync) {
-                $fallbackLangs = @(($Global:LangFallback -split ',') | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ })
-                $fallbackLang = $null
-                $fbCandidates = $null
-                foreach ($fl in $fallbackLangs) {
-                    $candidates = @(Get-ChildItem -LiteralPath $videoDir -File -Filter "*.srt" -ErrorAction SilentlyContinue | Where-Object {
-                        $_.Name -like "$titlePrefix*.srt" -and
-                        $_.Name -notmatch '\.synced\.' -and
-                        $_.Name -notmatch '\.translated\.srt$' -and
-                        (Get-SubtitleLanguage $_.Name) -eq $fl
-                    })
-                    if ($candidates.Count -gt 0) {
-                        $fallbackLang = $fl
-                        $fbCandidates = $candidates
-                        break
-                    }
-                }
-                if ($fbCandidates.Count -gt 0) {
-                    $fbSub = $fbCandidates[0]
-                    Show-Format "PRE-SYNC" "$($fbSub.Name)" "Sync brontaal ($fallbackLang) voor vertaling" -NameColor "DarkCyan"
-                    $syncResult = Invoke-SyncChain -VideoPath $videoPath -SubtitleInfo @{
-                        Name     = $fbSub.Name
-                        Path     = $fbSub.FullName
-                        Language = $fallbackLang
-                    } -VideoDir $videoDir
-                    if ($syncResult) {
-                        Show-Format "PRE-SYNC" "$([System.IO.Path]::GetFileName($syncResult.Path))" "Geslaagd via $($syncResult.Chain)" -NameColor "Green"
-                        $syncSuccess++
-                    } else {
-                        Show-Format "PRE-SYNC" "$($fbSub.Name)" "Mislukt, 08b gebruikt originele timing" -NameColor "Yellow"
-                        $syncFailed++
-                        $syncFailedItems += "$videoName :: $($fbSub.Name)"
-                    }
-                } else {
-                    Show-Format "SKIP" "$videoName" "Geen sub gevonden (ook geen $($fallbackLangs -join '/') voor vertaling)" -NameColor "Yellow"
-                }
+            if ($translateMode -ne "off") {
+                Show-Format "SKIP" "$videoName" "Geen doeltaal-sub: pre-sync overgeslagen voor STT/vertaal-flow" -NameColor "DarkGray"
             } else {
                 Show-Format "SKIP" "$videoName" "No subtitles found" -NameColor "Yellow"
             }
@@ -172,7 +137,7 @@ function Test-SubtitleNeedsSync {
     )
 
     # Volg SyncEnabled checkbox: true = syncen, false = niet syncen
-    if ($Global:SyncEnabled -ne $null) {
+    if ($null -ne $Global:SyncEnabled) {
         return (Test-TrueValue $Global:SyncEnabled)
     }
     # Fallback op oude SyncMode voor compatibiliteit
@@ -208,7 +173,7 @@ function Get-SubtitleTimingInfo {
 
     $pattern = '(\d{2}:\d{2}:\d{2},\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2},\d{3})'
     $matchesFound = [regex]::Matches((Get-Content -LiteralPath $SubtitlePath -Raw -ErrorAction SilentlyContinue), $pattern)
-    if (-not $matchesFound -or $matchesFound.Count -eq 0) {
+    if (($null -eq $matchesFound) -or ($matchesFound.Count -eq 0)) {
         return $null
     }
 
@@ -257,17 +222,14 @@ function Invoke-SyncChain {
 
     $useAlass = $true
     $useFFSubSync = $true
-    if ($Global:UseAlass -ne $null) { $useAlass = Test-TrueValue $Global:UseAlass }
-    if ($Global:UseFFSubSync -ne $null) { $useFFSubSync = Test-TrueValue $Global:UseFFSubSync }
+    if ($null -ne $Global:UseAlass) { $useAlass = Test-TrueValue $Global:UseAlass }
+    if ($null -ne $Global:UseFFSubSync) { $useFFSubSync = Test-TrueValue $Global:UseFFSubSync }
 
     if (-not $useAlass -and -not $useFFSubSync) {
         Show-Format "ERROR" "Synchronisatie" "Geen sync tool geselecteerd! Vink ALASS en/of FFSubSync aan in de config." -NameColor "Red"
         return $null
     }
 
-    $syncSteps = @()
-    $workingPath = $SubtitleInfo.Path
-    $workingName = $SubtitleInfo.Name
     $alassResult = $null
     $ffsubsyncResult = $null
 
@@ -313,14 +275,14 @@ function Sync-WithAlass {
         return $null
     }
     $syncOutput = Join-Path $VideoDir "$([System.IO.Path]::GetFileNameWithoutExtension($SubtitleInfo.Name)).alass.synced.srt"
-    $args = @(
+    $alassParams = @(
         "`"$VideoPath`"",
         "`"$($SubtitleInfo.Path)`"",
         "`"$syncOutput`""
     )
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $alassExe
-    $psi.Arguments = $args -join ' '
+    $psi.Arguments = $alassParams -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $false
     $psi.RedirectStandardOutput = $false
@@ -348,54 +310,54 @@ function Sync-WithFFSubSync {
     }
     $syncOutput = Join-Path $VideoDir "$([System.IO.Path]::GetFileNameWithoutExtension($SubtitleInfo.Name)).ffsubsync.synced.srt"
 
-    $args = @(
+    $ffParams = @(
         "`"$VideoPath`"",
         "-i", "`"$($SubtitleInfo.Path)`"",
         "-o", "`"$syncOutput`""
     )
 
     if ($Global:FFSubSyncMaxSubtitleSeconds) {
-        $args += @("--max-subtitle-seconds", "$($Global:FFSubSyncMaxSubtitleSeconds)")
+        $ffParams += @("--max-subtitle-seconds", "$($Global:FFSubSyncMaxSubtitleSeconds)")
     }
     if ($Global:FFSubSyncStartSeconds -and "$($Global:FFSubSyncStartSeconds)" -ne '0') {
-        $args += @("--start-seconds", "$($Global:FFSubSyncStartSeconds)")
+        $ffParams += @("--start-seconds", "$($Global:FFSubSyncStartSeconds)")
     }
     if ($Global:FFSubSyncMaxOffset) {
-        $args += @("--max-offset-seconds", "$($Global:FFSubSyncMaxOffset)")
+        $ffParams += @("--max-offset-seconds", "$($Global:FFSubSyncMaxOffset)")
     } else {
-        $args += @("--max-offset-seconds", "600")
+        $ffParams += @("--max-offset-seconds", "600")
     }
     if ($Global:FFSubSyncVAD) {
-        $args += @("--vad", "$($Global:FFSubSyncVAD)")
+        $ffParams += @("--vad", "$($Global:FFSubSyncVAD)")
     }
     if ($Global:FFSubSyncFrameRate) {
-        $args += @("--frame-rate", "$($Global:FFSubSyncFrameRate)")
+        $ffParams += @("--frame-rate", "$($Global:FFSubSyncFrameRate)")
     }
     if (Test-TrueValue $Global:FFSubSyncNoFixFramerate) {
-        $args += "--no-fix-framerate"
+        $ffParams += "--no-fix-framerate"
     }
     if ($Global:FFSubSyncEncoding) {
-        $args += @("--encoding", "$($Global:FFSubSyncEncoding)")
+        $ffParams += @("--encoding", "$($Global:FFSubSyncEncoding)")
     }
     if ($Global:FFSubSyncOutputEncoding) {
-        $args += @("--output-encoding", "$($Global:FFSubSyncOutputEncoding)")
+        $ffParams += @("--output-encoding", "$($Global:FFSubSyncOutputEncoding)")
     }
     if ($Global:FFmpegExe -and (Test-Path $Global:FFmpegExe)) {
-        $args += @("--ffmpeg-path", "`"$([System.IO.Path]::GetDirectoryName($Global:FFmpegExe))`"")
+        $ffParams += @("--ffmpeg-path", "`"$([System.IO.Path]::GetDirectoryName($Global:FFmpegExe))`"")
     }
     if ($Global:LogDir -and (Test-Path $Global:LogDir)) {
-        $args += @("--log-dir-path", "`"$Global:LogDir`"")
+        $ffParams += @("--log-dir-path", "`"$Global:LogDir`"")
     }
 
-    $commandLine = "`"$ffsubsyncExe`" " + ($args -join ' ')
+    $commandLine = "`"$ffsubsyncExe`" " + ($ffParams -join ' ')
     Write-Host "[CMD Test] $commandLine" -ForegroundColor Magenta
     if (Test-TrueValue $Global:SyncDebug) {
-        Show-Format "DEBUG" "FFSubSync args" ($args -join ' ') -NameColor "DarkGray"
+        Show-Format "DEBUG" "FFSubSync args" ($ffParams -join ' ') -NameColor "DarkGray"
     }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $ffsubsyncExe
-    $psi.Arguments = $args -join ' '
+    $psi.Arguments = $ffParams -join ' '
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $false
     $psi.RedirectStandardOutput = $false
