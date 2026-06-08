@@ -154,15 +154,22 @@ function Clean-AllSubtitles {
     Show-Format "INFO" "Found $($allSubs.Count) subtitle files to clean" "" -NameColor "Cyan"
     
     Set-Content -Path $logPath -Value "SubtitleFile`tCleaned`tTimestamp"
+
+    $maxCueLines = if ($Global:STTMaxLinesPerCue) { [int]"$($Global:STTMaxLinesPerCue)" } else { 2 }
+    $maxCharsPerLine = if ($Global:STTMaxCharsPerLine) { [int]"$($Global:STTMaxCharsPerLine)" } else { 42 }
+    if ($maxCueLines -lt 1) { $maxCueLines = 2 }
+    if ($maxCharsPerLine -lt 8) { $maxCharsPerLine = 42 }
     
     $cleanedCount = 0
     $skippedCount = 0
     
     foreach ($sub in $allSubs) {
         $wasCleaned = Clean-SubtitleFile -SubtitlePath $sub.FullName
+        $wasLineLimited = Limit-SrtCueLines -FilePath $sub.FullName -MaxLines $maxCueLines -MaxCharsPerLine $maxCharsPerLine
+        $wasChanged = ($wasCleaned -or $wasLineLimited)
         
-        if ($wasCleaned) {
-            Show-Format "CLEANED" "$($sub.Name)" "Removed HTML/SDH markers" -NameColor "Green"
+        if ($wasChanged) {
+            Show-Format "CLEANED" "$($sub.Name)" "Cleaned + cue lines limited to max $maxCueLines" -NameColor "Green"
             Add-Content -Path $logPath -Value "$($sub.Name)`tYes`t$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
             $cleanedCount++
         } else {

@@ -181,6 +181,13 @@ function Save-SelectedSubtitleForVerification {
     $safeLanguage = if ([string]::IsNullOrWhiteSpace($Language) -or $Language -eq 'unknown') { 'sub' } else { $Language.ToLower() }
     $targetPath = Join-Path $DestinationDir "$VideoBaseName.$safeLanguage.srt"
     Copy-Item -LiteralPath $SubtitlePath -Destination $targetPath -Force
+
+    $maxCueLines = if ($Global:STTMaxLinesPerCue) { [int]"$($Global:STTMaxLinesPerCue)" } else { 2 }
+    $maxCharsPerLine = if ($Global:STTMaxCharsPerLine) { [int]"$($Global:STTMaxCharsPerLine)" } else { 42 }
+    Normalize-SrtStructure -FilePath $targetPath | Out-Null
+    Repair-SrtTimestamps -FilePath $targetPath | Out-Null
+    Limit-SrtCueLines -FilePath $targetPath -MaxLines $maxCueLines -MaxCharsPerLine $maxCharsPerLine | Out-Null
+
     return $targetPath
 }
 

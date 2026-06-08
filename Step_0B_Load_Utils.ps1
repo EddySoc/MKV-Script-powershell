@@ -1023,6 +1023,9 @@ function Repair-SrtTimestamps {
 
     $fixed = $content
 
+    # Normaliseer punt naar komma in milliseconden van timestamps.
+    $fixed = [regex]::Replace($fixed, '(?m)(\d{2}:\d{2}:\d{2})\.(\d{3})', '$1,$2')
+
     # Fix timestamps where the comma between seconds and milliseconds is missing.
     # Examples:
     #   00:00:21710 --> 00:00:24,130  => 00:00:21,710 --> 00:00:24,130
@@ -1030,12 +1033,292 @@ function Repair-SrtTimestamps {
     $fixed = [regex]::Replace($fixed, '(?m)(\d{2}:\d{2}:)(\d{2})(\d{3})(?=\s*-->)', '$1$2,$3')
     $fixed = [regex]::Replace($fixed, '(?m)(-->\s*)(\d{2}:\d{2}:)(\d{2})(\d{3})(?=\s*$)', '$1$2$3,$4')
 
+    # Als er tekst op dezelfde regel na de timestamp staat: zet die op een nieuwe regel.
+    $fixed = [regex]::Replace($fixed, '(?m)^(\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3})\s+(.+)$', '$1' + "`r`n" + '$2')
+
     if ($fixed -ne $content) {
         Set-Content -LiteralPath $FilePath -Value $fixed -Encoding UTF8
         return $true
     }
 
     return $false
+}
+
+function Convert-WhisperTimestampToSrtTimestamp {
+    param([string]$Timestamp)
+
+    if ([string]::IsNullOrWhiteSpace($Timestamp)) {
+        return $null
+    }
+
+    $value = $Timestamp.Trim() -replace '\.', ','
+
+    if ($value -match '^\d{2}:\d{2}:\d{2},\d{3}$') {
+        return $value
+    }
+
+    if ($value -match '^(\d{2}):(\d{2}),(\d{3})$') {
+        return ('00:{0}:{1},{2}' -f $matches[1], $matches[2], $matches[3])
+    }
+
+    return $null
+}
+
+function Normalize-WhisperSubtitleFile {
+    param([string]$FilePath)
+
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath)) {
+        return $false
+    }
+
+    $raw = Get-Content -Raw -LiteralPath $FilePath -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $false
+    }
+
+    # Faster-Whisper-XXL kan bracket cues schrijven zoals:
+    # [00:03.130 --> 00:13.990] Text
+    # Zet die eerst om naar echte SRT entries.
+    $matches = [regex]::Matches(
+        ($raw -replace "`r`n", "`n"),
+        '(?m)^\[(?<start>\d{2}:\d{2}(?::\d{2})?[\.,]\d{3})\s*-->\s*(?<end>\d{2}:\d{2}(?::\d{2})?[\.,]\d{3})\]\s*(?<text>.*)$'
+    )
+
+    if ($matches.Count -eq 0) {
+        return $false
+    }
+
+    $blocks = [System.Collections.Generic.List[string]]::new()
+    $index = 1
+    foreach ($match in $matches) {
+        $start = Convert-WhisperTimestampToSrtTimestamp -Timestamp $match.Groups['start'].Value
+        $end = Convert-WhisperTimestampToSrtTimestamp -Timestamp $match.Groups['end'].Value
+        $text = $match.Groups['text'].Value.Trim()
+
+        if (-not $start -or -not $end) { continue }
+        if ([string]::IsNullOrWhiteSpace($text)) { $text = '...' }
+
+        $blocks.Add((@("$index", "$start --> $end", $text) -join "`r`n"))
+        $index++
+    }
+
+    if ($blocks.Count -eq 0) {
+        return $false
+    }
+
+    $rebuilt = ($blocks -join "`r`n`r`n") + "`r`n"
+    if ($rebuilt -eq $raw) {
+        return $false
+    }
+
+    Set-Content -LiteralPath $FilePath -Value $rebuilt -Encoding UTF8
+    return $true
+}
+
+function Normalize-SrtStructure {
+    param([string]$FilePath)
+
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath)) {
+        return $false
+    }
+
+    $raw = Get-Content -Raw -LiteralPath $FilePath -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $false
+    }
+
+    $normalized = ($raw -replace "`r`n", "`n") -replace '\.', ','
+    $lines = @($normalized -split "`n")
+    $blocks = [System.Collections.Generic.List[string]]::new()
+    $index = 1
+    $i = 0
+
+    while ($i -lt $lines.Count) {
+        $current = $lines[$i].Trim()
+        if ($current -notmatch '^\d+$' -or ($i + 1) -ge $lines.Count) {
+            $i++
+            continue
+        }
+
+        $timestamp = $lines[$i + 1].Trim() -replace '\.', ','
+        if ($timestamp -notmatch '^\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}$') {
+            $i++
+            continue
+        }
+
+        $textLines = [System.Collections.Generic.List[string]]::new()
+        $j = $i + 2
+        while ($j -lt $lines.Count) {
+            $probe = $lines[$j].Trim()
+            if (($j + 1) -lt $lines.Count -and $probe -match '^\d+$' -and $lines[$j + 1].Trim() -replace '\.', ',' -match '^\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}$') {
+                break
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($probe)) {
+                $textLines.Add($probe)
+            }
+            $j++
+        }
+
+        if ($textLines.Count -eq 0) {
+            $textLines.Add('...')
+        }
+
+        $blocks.Add((@("$index", $timestamp) + @($textLines) -join "`r`n"))
+        $index++
+        $i = $j
+    }
+
+    if ($blocks.Count -eq 0) {
+        return $false
+    }
+
+    $rebuilt = ($blocks -join "`r`n`r`n") + "`r`n"
+    if ($rebuilt -eq $raw) {
+        return $false
+    }
+
+    Set-Content -LiteralPath $FilePath -Value $rebuilt -Encoding UTF8
+    return $true
+}
+
+function Split-SubtitleTextLines {
+    param(
+        [string]$Text,
+        [int]$MaxCharsPerLine = 42,
+        [int]$MaxLines = 0
+    )
+
+    $cleanText = [regex]::Replace(($Text ?? ''), '\s+', ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($cleanText)) {
+        return @('')
+    }
+
+    if ($MaxCharsPerLine -lt 8) {
+        return @($cleanText)
+    }
+
+    $words = $cleanText -split ' '
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $currentLine = ''
+
+    foreach ($word in $words) {
+        if ([string]::IsNullOrWhiteSpace($word)) { continue }
+
+        if ([string]::IsNullOrWhiteSpace($currentLine)) {
+            $currentLine = $word
+            continue
+        }
+
+        $candidate = "$currentLine $word"
+        if ($candidate.Length -le $MaxCharsPerLine) {
+            $currentLine = $candidate
+        } else {
+            $lines.Add($currentLine)
+            $currentLine = $word
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($currentLine)) {
+        $lines.Add($currentLine)
+    }
+
+    if ($MaxLines -le 0 -or $lines.Count -le $MaxLines) {
+        return @($lines)
+    }
+
+    $result = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt ($MaxLines - 1); $i++) {
+        $result.Add($lines[$i])
+    }
+
+    $overflow = (($lines | Select-Object -Skip ($MaxLines - 1)) -join ' ').Trim()
+    $result.Add($overflow)
+    return @($result)
+}
+
+function Limit-SrtCueLines {
+    param(
+        [string]$FilePath,
+        [int]$MaxLines = 2,
+        [int]$MaxCharsPerLine = 42
+    )
+
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath)) {
+        return $false
+    }
+
+    if ($MaxLines -lt 1) { $MaxLines = 1 }
+    if ($MaxCharsPerLine -lt 8) { $MaxCharsPerLine = 42 }
+
+    $raw = Get-Content -Raw -LiteralPath $FilePath -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $false
+    }
+
+    $normalized = $raw -replace "`r`n", "`n"
+    $normalized = [regex]::Replace($normalized, '(?m)(\d{2}:\d{2}:\d{2})\.(\d{3})', '$1,$2')
+
+    $originalTimestampCount = [regex]::Matches($normalized, '(?m)^\d{2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[,\.]\d{3}$').Count
+    if ($originalTimestampCount -eq 0) {
+        return $false
+    }
+
+    $blocks = @($normalized -split "`n`n+")
+    $rebuiltBlocks = [System.Collections.Generic.List[string]]::new()
+    $changed = $false
+    $nextIndex = 1
+
+    foreach ($block in $blocks) {
+        if ([string]::IsNullOrWhiteSpace($block)) {
+            continue
+        }
+
+        $blockLines = @($block -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+        if ($blockLines.Count -lt 3) {
+            continue
+        }
+
+        $indexLine = $blockLines[0]
+        $timestampLine = $blockLines[1] -replace '\.', ','
+        if ($indexLine -notmatch '^\d+$') {
+            continue
+        }
+
+        if ($timestampLine -notmatch '^\d{2}:\d{2}:\d{2},\d{3}\s*-->\s*\d{2}:\d{2}:\d{2},\d{3}$') {
+            continue
+        }
+
+        $textLines = @($blockLines | Select-Object -Skip 2)
+        $text = ([regex]::Replace(($textLines -join ' '), '\s+', ' ')).Trim()
+        if ([string]::IsNullOrWhiteSpace($text)) { $text = '...' }
+
+        $wrappedLines = Split-SubtitleTextLines -Text $text -MaxCharsPerLine $MaxCharsPerLine -MaxLines $MaxLines
+        $rebuiltBlock = @("$nextIndex", $timestampLine) + $wrappedLines
+        $rebuiltBlocks.Add(($rebuiltBlock -join "`r`n"))
+
+        if ($indexLine -ne "$nextIndex") { $changed = $true }
+        if ($textLines.Count -ne $wrappedLines.Count) { $changed = $true }
+
+        $nextIndex++
+    }
+
+    if ($rebuiltBlocks.Count -eq 0) {
+        return $false
+    }
+
+    $minExpectedBlocks = [Math]::Max(1, [int][Math]::Floor($originalTimestampCount * 0.7))
+    if ($rebuiltBlocks.Count -lt $minExpectedBlocks) {
+        return $false
+    }
+
+    $rebuilt = ($rebuiltBlocks -join "`r`n`r`n").TrimEnd() + "`r`n"
+    if (-not $changed -and $rebuilt -eq $raw) {
+        return $false
+    }
+
+    Set-Content -LiteralPath $FilePath -Value $rebuilt -Encoding UTF8
+    return $true
 }
 
 #*********************************************************************************************

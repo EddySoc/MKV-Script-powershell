@@ -219,10 +219,7 @@ function Validate-subs {
         # Accept all valid SRT files, regardless of language code in filename
         # Language validation will happen later in Score stage
         if ($formatOK -eq "YES") {
-            # Clean the subtitle file (remove HTML/SDH, fix structure)
-            $wasCleaned = Clean-SubtitleFile -SubtitlePath $subPath
-            $cleanMsg = if ($wasCleaned) { ", cleaned" } else { "" }
-            Show-Format "VALID" "$fileName" "lang=$lang, format=OK$cleanMsg" -NameColor "Green"
+            Show-Format "VALID" "$fileName" "lang=$lang, format=OK" -NameColor "Green"
             $stats.VALID++
             Add-Content -Path $logPath -Value "$fileName`t$lang`tYES`tVALID"
         } else {

@@ -49,3 +49,15 @@ venv/
 Thumbs.db
 Desktop.ini
 .vscode/
+
+# Added by Git Quick Push
+*.py[cod]
+*.pyd
+env/
+build/
+dist/
+*.spec
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store

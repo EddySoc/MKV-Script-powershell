@@ -159,11 +159,16 @@ function Invoke-STT {
     $audioLang   = if ($Global:STTLanguage)   { $Global:STTLanguage }   else { "auto" }
     $outputLang  = if ($Global:STTOutputLang) { $Global:STTOutputLang } else { "" }
     $detectionSegs = if ($Global:STTDetectionSegments) { [int]"$($Global:STTDetectionSegments)" } else { 5 }
+    $maxCueLines = if ($Global:STTMaxLinesPerCue) { [int]"$($Global:STTMaxLinesPerCue)" } else { 2 }
+    $maxCharsPerLine = if ($Global:STTMaxCharsPerLine) { [int]"$($Global:STTMaxCharsPerLine)" } else { 42 }
+
+    if ($maxCueLines -lt 1) { $maxCueLines = 2 }
+    if ($maxCharsPerLine -lt 8) { $maxCharsPerLine = 42 }
 
     $multilingualSetting = if ($Global:STTMultilingual) { "$($Global:STTMultilingual)".ToLower().Trim() } else { 'auto' }
     $multilingualInfo = if ($multilingualSetting -eq 'false') { '' } else { ' | Multilingual=on' }
 
-    Show-Format "CONFIG" "Model=$model" "AudioLang=$audioLang$(if ($outputLang) { ' | OutputLang=' + $outputLang })$multilingualInfo" -NameColor "Cyan"
+    Show-Format "CONFIG" "Model=$model" "AudioLang=$audioLang$(if ($outputLang) { ' | OutputLang=' + $outputLang }) | MaxCueLines=$maxCueLines | MaxCharsPerLine=$maxCharsPerLine$multilingualInfo" -NameColor "Cyan"
 
     # --- Normaliseer taalcodes naar 2-letter ISO (Whisper gebruikt 2-letter)
     $langMap = @{
@@ -368,9 +373,13 @@ public class WhisperOutputReader {
 
             # Corrigeer tijdcodes in Whisper output vóór hernoemen
             if (Test-Path -LiteralPath $whisperOut) {
+                Normalize-WhisperSubtitleFile -FilePath $whisperOut | Out-Null
                 Repair-SrtTimestamps -FilePath $whisperOut | Out-Null
+                Limit-SrtCueLines -FilePath $whisperOut -MaxLines $maxCueLines -MaxCharsPerLine $maxCharsPerLine | Out-Null
             } elseif (Test-Path -LiteralPath $taggedPath) {
+                Normalize-WhisperSubtitleFile -FilePath $taggedPath | Out-Null
                 Repair-SrtTimestamps -FilePath $taggedPath | Out-Null
+                Limit-SrtCueLines -FilePath $taggedPath -MaxLines $maxCueLines -MaxCharsPerLine $maxCharsPerLine | Out-Null
             }
 
             if (Test-Path -LiteralPath $whisperOut) {
@@ -399,9 +408,10 @@ public class WhisperOutputReader {
                 try { $proc.StandardError.Dispose() } catch {}
                 try { $proc.Dispose() } catch {}
             }
-            Stop-LingeringSTTProcesses -WhisperExe $whisperExe -KeepPids $baselineWhisperPids
         }
     }
+
+    Stop-LingeringSTTProcesses -WhisperExe $whisperExe -KeepPids $baselineWhisperPids
 
     Show-Format "SUMMARY" "STT voltooid" "Gegenereerd: $generatedCount | Overgeslagen: $skippedCount" -NameColor "Cyan"
     Set-StepRunResult -Step "06" -Success $generatedCount -Failed $failedCount -FailedItems $failedItems -Note "skipped=$skippedCount"
